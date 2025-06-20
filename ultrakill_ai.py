@@ -7,6 +7,7 @@ import dxcam, cv2, numpy as np, os, ctypes, win32gui
 import atexit, signal, sys, traceback, ctypes
 from ctypes import wintypes
 import traceback
+from input_helper import send_scan, press_scancode, release_scancode, press_forward, SCAN
 
 
 ctypes.windll.kernel32.FreeConsole()
