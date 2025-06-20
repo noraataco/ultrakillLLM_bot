@@ -102,7 +102,11 @@ def main():
     if test_obs.shape[-1] != 3:
         print(f"Error: Expected 3 channels, got {test_obs.shape[-1]}")
         return
-    
+    for env in vec.envs:
+        if hasattr(env, 'in_warmup'):
+            env.in_warmup = False
+    release_all_movement_keys()
+    print("Cleared dummy warmup – first real episode starts immediately")
     # Proper frame stacking for color images
     vec = VecTransposeImage(vec)  # (H,W,C) -> (C,H,W)
     print("Observation space before stacking:", vec.observation_space)
