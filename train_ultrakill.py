@@ -152,8 +152,9 @@ def main():
     def is_esc_pressed():
         return msvcrt.kbhit() and msvcrt.getch() == b'\x1b'
     
-    # single-shot training for ~250 episodes worth of data
-    target_timesteps = int(250 *  84)  # ~21 000
+    # single-shot training for 250 full episodes before saving
+    EPISODE_STEPS = 2000  # max steps per episode in UltrakillEnv
+    target_timesteps = 250 * EPISODE_STEPS
     print(f"Training for {target_timesteps} timesteps (~250 episodes)...")
     # Wrap learn() in try/except/finally so we always save & clean up
     try:
