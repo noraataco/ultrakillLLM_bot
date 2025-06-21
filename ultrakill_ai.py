@@ -140,7 +140,7 @@ def grab_frame():
 # Helper to recognize the scoreboard / death screen
 def is_score_screen(frame: np.ndarray) -> bool:
     gray = frame.squeeze()
-    return gray.mean() < 40 and gray.std() < 15
+    return gray.mean() < 55 and gray.std() < 20
 
 # ── soft reset (ESC→Enter) ──────────────────────────────────
 VK_ESC, VK_ENTER = 0x1B, 0x0D
