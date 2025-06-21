@@ -182,7 +182,9 @@ class UltrakillEnv(gym.Env):
         self.prev_offset  = None
         self.t            = 0
         self.episode_id   = 0
-        self.auto_forward_end = None
+        self.auto_forward_active = False
+        self.auto_forward_start  = None
+        self.auto_forward_end    = None
 
     def reset(self, *, seed=None, options=None):
         self.episode_id += 1
@@ -224,10 +226,11 @@ class UltrakillEnv(gym.Env):
         
         # Make extra sure no keys are stuck before we walk in
         release_all_movement_keys()
-        # Start walking in and remember when to stop
+        # Start walking in and flag for warm-up
         send_scan(SCAN["MOVE_FORWARD"])
-        self._spawn_time = time.time()
-        self.auto_forward_end = self._spawn_time + self.WARMUP_TIME
+        self.auto_forward_active = True
+        self.auto_forward_start  = None
+        self.auto_forward_end    = None
         
         # Get initial observation
         frame = grab_frame()
@@ -236,9 +239,12 @@ class UltrakillEnv(gym.Env):
 
     def step(self, action):
         """Advance the environment by one frame."""
-        elapsed = time.time() - self._spawn_time
         auto_forward = False
-        if self.auto_forward_end:
+        if self.auto_forward_active:
+            if self.auto_forward_start is None:
+                self.auto_forward_start = time.time()
+                self.auto_forward_end = self.auto_forward_start + self.WARMUP_TIME
+
             if time.time() < self.auto_forward_end:
                 # during warm-up we keep walking forward
                 auto_forward = True
@@ -246,6 +252,8 @@ class UltrakillEnv(gym.Env):
                 # stop holding forward once the warm-up period expires
                 send_scan(SCAN["MOVE_FORWARD"], True)
                 time.sleep(0.05)
+                self.auto_forward_active = False
+                self.auto_forward_start = None
                 self.auto_forward_end = None
 
         # from here on, normal unpack/action/reward logic…
