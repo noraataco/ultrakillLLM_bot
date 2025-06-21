@@ -36,20 +36,27 @@ STEP_DELAY = 0.02
 # Utility functions
 # Replace the existing pitch_penalty function with:
 def pitch_penalty(frame: np.ndarray, target_present: bool) -> float:
-    """
-    Penalize looking at ground/sky, but allow when enemies are present
+    """Return a penalty for extreme up/down pitch.
+
+    A small penalty is always applied for looking far above or below the
+    horizon.  When a target is present we scale it down so the agent can still
+    track airborne or ground enemies, but when nothing is on screen we want a
+    strong discouragement from staring at the sky or the floor.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     top = gray[:20].mean()
     bottom = gray[-20:].mean()
-    
-    # Only apply penalty when no enemies are visible
-    if not target_present:
-        if bottom - top < -15:  # Looking down at ground
-            return 0.3
-        elif top - bottom > 15:  # Looking up at sky
-            return 0.2
-    return 0.0
+
+    penalty = 0.0
+    if bottom - top < -15:          # looking down at the ground
+        penalty = 0.4
+    elif top - bottom > 15:         # looking up at the sky
+        penalty = 0.3
+
+    if target_present:
+        penalty *= 0.5  # allow more vertical freedom when enemies visible
+
+    return penalty
 
 def release_all_movement_keys():
     for key in ["MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"]:
@@ -308,6 +315,13 @@ class UltrakillEnv(gym.Env):
         # on-center bonus
         if shoot_p > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
             r += ON_CENTER_BONUS * 1.5
+
+        # When there is no visible target encourage scanning horizontally but
+        # discourage excessive vertical movement.  This helps break the habit of
+        # looking straight up or down while still letting the agent explore.
+        if not target_present:
+            r += 0.05 * abs(dx_move)   # yaw left/right
+            r -= 0.05 * abs(dy_move)   # discourage pitching up/down
 
         # Vertical aim adjustments
         if offset is not None:
