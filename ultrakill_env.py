@@ -270,14 +270,20 @@ class UltrakillEnv(gym.Env):
                 send_scan(SCAN["MOVE_FORWARD"], True)
                 send_scan(SCAN["MOVE_BACK"],    True)
 
-            # strafe
-            if   dy_move >  0.1:
-                send_scan(SCAN["MOVE_RIGHT"])
-            elif dy_move < -0.1:
-                send_scan(SCAN["MOVE_LEFT"], True)
+            # strafe (disabled during warm-up auto-walk)
+            if not auto_forward:
+                if   dy_move >  0.1:
+                    send_scan(SCAN["MOVE_RIGHT"])
+                elif dy_move < -0.1:
+                    send_scan(SCAN["MOVE_LEFT"], True)
+                else:
+                    send_scan(SCAN["MOVE_RIGHT"], True)
+                    send_scan(SCAN["MOVE_LEFT"],  True)
             else:
+                # Release any strafe keys so we walk straight into the arena
                 send_scan(SCAN["MOVE_RIGHT"], True)
                 send_scan(SCAN["MOVE_LEFT"],  True)
+                dy_move = 0.0
 
         # 3) Always turn camera (except during warm-up auto-walk)
         if not auto_forward:
