@@ -263,6 +263,9 @@ class UltrakillEnv(gym.Env):
         release_all_movement_keys()
         send_scan(SCAN["MOVE_FORWARD"])
         self.auto_forward_active = True
+        # reset timing markers so warmup duration triggers on every episode
+        self.auto_forward_start = None
+        self.auto_forward_end   = None
 
         frame = grab_frame()
         self.prev_frame = frame.copy()
