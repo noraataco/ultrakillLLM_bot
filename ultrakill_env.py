@@ -227,9 +227,7 @@ class UltrakillEnv(gym.Env):
                 return frame, 0.0, False, False, {}
             else:
                 send_scan(SCAN["MOVE_FORWARD"], True)
-                f7hwc7-codex/understand-program-functionality
                 time.sleep(0.05)
-
 
                 self.in_warmup = False
 
