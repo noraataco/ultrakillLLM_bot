@@ -5,6 +5,7 @@ import mss, cv2, numpy as np, win32gui
 import gymnasium as gym
 from gymnasium.spaces import Box
 from utils import lock_ultrakill_focus
+import pytesseract, re
 from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
@@ -41,27 +42,20 @@ STEP_DELAY = 0.02
 SURVIVAL_BONUS = 0.01
 
 # Utility functions
-# Replace the existing pitch_penalty function with:
 def pitch_penalty(frame: np.ndarray, target_present: bool) -> float:
-    """Return a penalty for extreme up/down pitch.
-
-    A small penalty is always applied for looking far above or below the
-    horizon.  When a target is present we scale it down so the agent can still
-    track airborne or ground enemies, but when nothing is on screen we want a
-    strong discouragement from staring at the sky or the floor.
-    """
+    """Return a penalty for extreme up/down pitch."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     top = gray[:20].mean()
     bottom = gray[-20:].mean()
 
     penalty = 0.0
-    if bottom - top < -15:          # looking down at the ground
+    if bottom - top < -15:
         penalty = 0.4
-    elif top - bottom > 15:         # looking up at the sky
+    elif top - bottom > 15:
         penalty = 0.3
 
     if target_present:
-        penalty *= 0.5  # allow more vertical freedom when enemies visible
+        penalty *= 0.5
 
     return penalty
 
@@ -86,7 +80,6 @@ def grab_frame() -> np.ndarray:
             left, top, right, bot = win32gui.GetClientRect(hwnd)
             x, y = win32gui.ClientToScreen(hwnd, (0,0))
             monitor = {"top": y, "left": x, "width": right, "height": bot}
-            # Use global MSS instance to avoid repeatedly opening handles
             img = np.array(sct.grab(monitor))
             if img.shape[2] == 4:
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
@@ -99,20 +92,15 @@ def grab_frame() -> np.ndarray:
     return img
 
 def eye_level_bonus(frame: np.ndarray) -> float:
-    """Reward for keeping crosshair near eye-level (center of screen)"""
     h, w = frame.shape[:2]
     center_y = h // 2
-    # Check a horizontal strip around eye-level (20% of screen height)
     eye_zone = frame[center_y-30:center_y+30, :]
-    return 0.1 * (eye_zone.mean() > 100)  # Reward if not looking at dark ground
+    return 0.1 * (eye_zone.mean() > 100)
 
-# Scoreboard detection helper
 def is_score_screen(frame: np.ndarray) -> bool:
-    """Return True if the frame looks like the ULTRAKILL scoreboard."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return gray.mean() < 55 and gray.std() < 20
 
-# Vision helpers
 def red_center_bonus(rgb: np.ndarray) -> float:
     h,w = rgb.shape[:2]
     c = rgb[h//2-20:h//2+20, w//2-20:w//2+20]
@@ -121,105 +109,88 @@ def red_center_bonus(rgb: np.ndarray) -> float:
 
 def detect_target_offset(frame: np.ndarray) -> Optional[Tuple[float,float]]:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    masks = [
-        cv2.inRange(hsv, (0,120,70), (10,255,255)),
-        cv2.inRange(hsv, (170,120,70), (180,255,255)),
-        cv2.inRange(hsv, (100,120,70), (130,255,255)),
-        cv2.inRange(hsv, (15,100,100), (40,255,255)),
-    ]
+    masks = [cv2.inRange(hsv, lo, hi) for lo,hi in
+             [((0,120,70),(10,255,255)),
+              ((170,120,70),(180,255,255)),
+              ((100,120,70),(130,255,255)),
+              ((15,100,100),(40,255,255))]]
     mask = masks[0]
     for m in masks[1:]:
         mask |= m
     cnts,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
+    if not cnts or cv2.contourArea(max(cnts, key=cv2.contourArea)) < 50:
         return None
-    best = max(cnts, key=cv2.contourArea)
-    if cv2.contourArea(best) < 50:
-        return None
-    M = cv2.moments(best)
+    M = cv2.moments(max(cnts, key=cv2.contourArea))
     cx,cy = M['m10']/M['m00'], M['m01']/M['m00']
     h,w = frame.shape[:2]
     return ((cx-w/2)/(w/2), (cy-h/2)/(h/2))
 
 def detect_targets(frame: np.ndarray) -> float:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    masks = [
-        cv2.inRange(hsv, (0,120,70), (10,255,255)),
-        cv2.inRange(hsv, (170,120,70),(180,255,255)),
-        cv2.inRange(hsv, (100,120,70),(130,255,255)),
-        cv2.inRange(hsv, (15,100,100),(40,255,255)),
-    ]
+    masks = [cv2.inRange(hsv, lo, hi) for lo,hi in
+             [((0,120,70),(10,255,255)),
+              ((170,120,70),(180,255,255)),
+              ((100,120,70),(130,255,255)),
+              ((15,100,100),(40,255,255))]]
     combined = masks[0]
     for m in masks[1:]:
         combined |= m
     return combined.mean()
 
 def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
-    """Return overall damage level and a rough direction vector.
-
-    We approximate incoming damage by looking for reddish overlays on the
-    screen edges.  The returned direction points toward the strongest edge
-    (positive x = from the right, positive y = from the bottom).
-    """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (0, 50, 50), (10, 255, 255)) | \
-           cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
-
+    mask = (cv2.inRange(hsv, (0,50,50),(10,255,255)) |
+            cv2.inRange(hsv, (170,50,50),(180,255,255)))
     edge = 20
     left   = mask[:, :edge].mean()
     right  = mask[:, -edge:].mean()
     top    = mask[:edge, :].mean()
     bottom = mask[-edge:, :].mean()
-
     level = max(left, right, top, bottom) / 255.0
-    dx = right - left
-    dy = bottom - top
-    return level, dx / 255.0, dy / 255.0
+    dx = (right - left) / 255.0
+    dy = (bottom - top) / 255.0
+    return level, dx, dy
 
 def detect_dashes(frame: np.ndarray) -> int:
     """Return the number of dash charges available (0-3)."""
     h, w = frame.shape[:2]
-    # Region under the health bar in the lower left corner
-    x0 = int(w * 0.03)
-    x1 = int(w * 0.18)
-    y0 = int(h * 0.84)
-    y1 = int(h * 0.89)
+    x0, x1 = int(w*0.03), int(w*0.18)
+    y0, y1 = int(h*0.84), int(h*0.89)
     bar = frame[y0:y1, x0:x1]
     if bar.size == 0:
         return 0
     hsv = cv2.cvtColor(bar, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (80, 50, 180), (110, 255, 255))
+    mask = cv2.inRange(hsv, (80,50,180), (110,255,255))
     seg_w = mask.shape[1] // 3
-    count = 0
-    for i in range(3):
-        seg = mask[:, i * seg_w:(i + 1) * seg_w]
-        if seg.mean() > 40:  # sufficiently blue
-            count += 1
-    return count
+    return sum((mask[:, i*seg_w:(i+1)*seg_w].mean() > 40) for i in range(3))
 
+def read_health(frame: np.ndarray) -> Optional[int]:
+    """Return the current health as an integer if detected."""
+    h, w = frame.shape[:2]
+    region = frame[h-45:h-5, 5:140]
+    if region.size == 0:
+        return None
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    config = "--psm 7 -c tessedit_char_whitelist=0123456789"
+    text = pytesseract.image_to_string(thresh, config=config)
+    digits = re.findall(r"\d+", text)
+    return int(digits[0]) if digits else None
 
 class UltrakillEnv(gym.Env):
-    """
-    Wrapper that walks forward on reset, then hands off to the agent for aiming/shooting.
-    """
-    WARMUP_TIME  = 4.0    # seconds
+    WARMUP_TIME  = 4.0
     FRAME_DELAY  = STEP_DELAY
 
     def __init__(self, *, aim_only: bool=False):
         super().__init__()
         self.aim_only = aim_only
 
-        # **here**: explicitly pass the shape tuple
         self.observation_space = Box(
-            low=0,
-            high=255,
-            shape=(360, 640, 3),
-            dtype=np.uint8,
+            low=0, high=255, shape=(360, 640, 3), dtype=np.uint8
         )
-
         self.action_space = gym.spaces.Box(
-            low=np.array([-1, -1, 0], dtype=np.float32),
-            high=np.array([1,  1, 1], dtype=np.float32),
+            low=np.array([-1,-1,0], dtype=np.float32),
+            high=np.array([1, 1, 1], dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -228,6 +199,7 @@ class UltrakillEnv(gym.Env):
         self.t            = 0
         self.episode_id   = 0
         self.dash_count   = 0
+        self.health       = None
         self.auto_forward_active = False
         self.auto_forward_start  = None
         self.auto_forward_end    = None
@@ -239,100 +211,70 @@ class UltrakillEnv(gym.Env):
         time.sleep(0.5)
         lock_ultrakill_focus()
         time.sleep(0.2)
-        
-        # Wait briefly for the scoreboard to appear after death
-        time.sleep(2.0)
+        time.sleep(2.0)  # wait for death screen fade
 
         attempts = 0
         while True:
             frame = grab_frame()
-            gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+            if cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean() >= 45:
+                break
+            if self.episode_id == 1:
+                soft_reset()
+            else:
+                send_scan(SCAN["JUMP"]); send_scan(SCAN["JUMP"], True)
+            attempts += 1
+            if attempts > 5:
+                soft_reset(); time.sleep(3.0); break
+            time.sleep(0.1)
 
-            # Treat very dark frames as scoreboard/fade-out and try skipping them
-            if gray_mean < 45:
-                if self.episode_id == 1:
-                    soft_reset()
-                else:
-                    send_scan(SCAN["JUMP"])
-                    send_scan(SCAN["JUMP"], True)
-                    time.sleep(1.0 + attempts * 0.5)
-
-                attempts += 1
-                if attempts > 5:  # Safety break
-                    soft_reset()
-                    time.sleep(3.0)
-                    break
-
-                time.sleep(0.1)
-                continue
-
-            # Once the screen brightens past the threshold, assume we're spawned
-            break
-        
-        # Make extra sure no keys are stuck before we walk in
         release_all_movement_keys()
-        # Start walking in and flag for warm-up
         send_scan(SCAN["MOVE_FORWARD"])
         self.auto_forward_active = True
-        self.auto_forward_start  = None
-        self.auto_forward_end    = None
-        
-        # Get initial observation
+
         frame = grab_frame()
         self.prev_frame = frame.copy()
         self.dash_count = detect_dashes(frame)
-        return frame, {"dash_count": self.dash_count}
+        self.health     = read_health(frame)
+        return frame, {"dash_count": self.dash_count, "health": self.health}
 
     def step(self, action):
-        """Advance the environment by one frame."""
         auto_forward = False
         if self.auto_forward_active:
             if self.auto_forward_start is None:
-                self.auto_forward_start = time.time()
-                self.auto_forward_end = self.auto_forward_start + self.WARMUP_TIME
-
+                now = time.time()
+                self.auto_forward_start = now
+                self.auto_forward_end   = now + self.WARMUP_TIME
             if time.time() < self.auto_forward_end:
-                # during warm-up we keep walking forward
                 auto_forward = True
             else:
-                # stop holding forward once the warm-up period expires
                 send_scan(SCAN["MOVE_FORWARD"], True)
                 time.sleep(0.05)
                 self.auto_forward_active = False
-                self.auto_forward_start = None
-                self.auto_forward_end = None
 
-        # from here on, normal unpack/action/reward logic…
         dx_move, dy_move, shoot_p = map(float, action)
-        dx_move, dy_move          = np.clip([dx_move, dy_move], -1, 1)
+        dx_move, dy_move = np.clip([dx_move, dy_move], -1, 1)
 
-        # 2) Full-body locomotion if not aim-only
+        # movement...
         if not self.aim_only:
-            # forward/back (auto-walk overrides agent input)
             if auto_forward or dx_move > 0.1:
                 send_scan(SCAN["MOVE_FORWARD"])
             elif dx_move < -0.1:
                 send_scan(SCAN["MOVE_BACK"], True)
             else:
-                send_scan(SCAN["MOVE_FORWARD"], True)
-                send_scan(SCAN["MOVE_BACK"],    True)
+                send_scan(SCAN["MOVE_FORWARD"], True); send_scan(SCAN["MOVE_BACK"], True)
 
-            # strafe (disabled during warm-up auto-walk)
             if not auto_forward:
-                if   dy_move >  0.1:
+                if dy_move > 0.1:
                     send_scan(SCAN["MOVE_RIGHT"])
                 elif dy_move < -0.1:
                     send_scan(SCAN["MOVE_LEFT"], True)
                 else:
-                    send_scan(SCAN["MOVE_RIGHT"], True)
-                    send_scan(SCAN["MOVE_LEFT"],  True)
+                    send_scan(SCAN["MOVE_RIGHT"], True); send_scan(SCAN["MOVE_LEFT"], True)
             else:
-                # Release any strafe keys so we walk straight into the arena
-                send_scan(SCAN["MOVE_RIGHT"], True)
-                send_scan(SCAN["MOVE_LEFT"],  True)
+                send_scan(SCAN["MOVE_RIGHT"], True); send_scan(SCAN["MOVE_LEFT"], True)
                 dy_move = 0.0
 
-        # 3) Always turn camera (except during warm-up auto-walk)
+        # camera...
         if not auto_forward:
             user32.mouse_event(
                 MOUSEEVENTF_MOVE,
@@ -340,105 +282,88 @@ class UltrakillEnv(gym.Env):
                 int(dy_move * TURN_PIXELS),
                 0, 0
             )
-
         else:
-            # ignore agent camera input while walking into the arena
-            dx_move = dy_move = 0.0
-            shoot_p = 0.0
+            dx_move = dy_move = shoot_p = 0.0
 
-        # 4) Shooting (disabled during warm-up)
+        # shoot...
         if shoot_p > 0.5 and not auto_forward:
             mouse_click()
 
-        # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
         self.dash_count = detect_dashes(frame)
-        gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if is_score_screen(frame) or gray_img.mean() < 12 or gray_img.mean() > 240:
-            release_all_movement_keys()
-            return frame, -50.0, True, False, {}
-        gray = gray_img.mean()
+        self.health     = read_health(frame)
 
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+        if is_score_screen(frame) or gray < 12 or gray > 240:
+            release_all_movement_keys()
+            return frame, -50.0, True, False, {
+                "dash_count": self.dash_count,
+                "health": self.health
+            }
+
+        # reward shaping...
+        diff = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
+        motion_frac = (diff > 15).mean()
+        hit_bonus = red_center_bonus(frame) * HIT_BONUS
+        offset = detect_target_offset(frame)
+        damage_level, dmg_dx, dmg_dy = detect_damage(frame)
+
+        r = -0.02 + (CURI_SCALE + VEL_SCALE)*(diff.mean()/255)
         target_score = detect_targets(frame)
         target_present = target_score > 0.02
 
-        # ——— Reward shaping ———
-        diff         = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
-        motion_frac  = (diff > 15).mean()
-        target_score = detect_targets(frame)
-        hit_bonus    = red_center_bonus(frame) * HIT_BONUS
-        offset       = detect_target_offset(frame)
-        damage_level, dmg_dx, dmg_dy = detect_damage(frame)
-        # base reward: time penalty + curiosity/velocity bonus
-        r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
-
-        # only reward turning when there’s actually something to turn toward
         if target_score > 0.01:
-            r += TURN_R * (abs(dx_move) + abs(dy_move))
-
-        # penalize blind firing
+            r += TURN_R*(abs(dx_move)+abs(dy_move))
         if shoot_p > 0.5 and target_score < 0.02:
             r -= 0.5
 
-        # target engagement
         if target_score > 0.02:
             if shoot_p > 0.5:
-                r += 2.0 + 2.0 * target_score + hit_bonus
+                r += 2.0 + 2.0*target_score + hit_bonus
             else:
                 r -= 0.005
         else:
-            r += 0.02 * motion_frac
+            r += 0.02*motion_frac
 
-        # on-center bonus
-        if shoot_p > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
-            r += ON_CENTER_BONUS * 1.5
+        if shoot_p > 0.5 and offset and abs(offset[0])<0.1 and abs(offset[1])<0.1:
+            r += ON_CENTER_BONUS*1.5
 
-        # When there is no visible target encourage scanning horizontally but
-        # discourage excessive vertical movement.  This helps break the habit of
-        # looking straight up or down while still letting the agent explore.
         if not target_present:
-            r += 0.05 * abs(dx_move)   # yaw left/right
-            r -= 0.05 * abs(dy_move)   # discourage pitching up/down
+            r += 0.05*abs(dx_move)
+            r -= 0.05*abs(dy_move)
 
-        # Vertical aim adjustments
         if offset is not None:
-            up_error   = max(0.0, -offset[1])
-            down_bonus = max(0.0, offset[1])
-            r -= up_error * 0.5            # harsh penalty for looking up
-            r += down_bonus * 0.2          # mild bonus for looking down
-
+            up_err = max(0.0, -offset[1])
+            down_b = max(0.0, offset[1])
+            r -= up_err*0.5; r += down_b*0.2
             if not target_present:
-                # Penalize deviation from center but reward slight steadiness
-                r -= 0.05 * abs(offset[1])
-                if abs(offset[1]) < 0.1:
+                r -= 0.05*abs(offset[1])
+                if abs(offset[1])<0.1:
                     r += 0.01
 
         if not target_present:
             r += eye_level_bonus(frame)
 
         if damage_level > DAMAGE_THRESHOLD:
-            move_dot = dx_move * dmg_dx + dy_move * dmg_dy
-            r -= damage_level * 2.0
-            r -= DAMAGE_MOVE_WEIGHT * move_dot
+            move_dot = dx_move*dmg_dx + dy_move*dmg_dy
+            r -= damage_level*2.0
+            r -= DAMAGE_MOVE_WEIGHT*move_dot
 
-        # keep your old sky/ceiling penalty too (you can scale it up):
-        r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
-        # small bonus for every step survived
+        r -= pitch_penalty(frame, target_present)
         r += SURVIVAL_BONUS
 
-        # 7) Finalize
         self.prev_frame = frame.copy()
         self.t += 1
         done = self.t >= 2000
-        info = {"dash_count": self.dash_count}
-        return frame, float(r), done, False, info
+
+        return frame, float(r), done, False, {
+            "dash_count": self.dash_count,
+            "health": self.health
+        }
 
     def close(self):
         release_all_movement_keys()
-        try:
-            sct.close()
-        except Exception:
-            pass
+        try: sct.close()
+        except: pass
         print("Environment closed - keys released")
-
