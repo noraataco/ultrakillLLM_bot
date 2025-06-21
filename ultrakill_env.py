@@ -127,7 +127,7 @@ def detect_target_offset(frame: np.ndarray) -> Optional[Tuple[float,float]]:
 
 def detect_targets(frame: np.ndarray) -> float:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    masks = [cv2.inRange(hsv, lo, hi) for lo,hi in
+    masks = [cv2.inRange(hsv, lo, hi) for lo, hi in
              [((0,120,70),(10,255,255)),
               ((170,120,70),(180,255,255)),
               ((100,120,70),(130,255,255)),
@@ -137,7 +137,31 @@ def detect_targets(frame: np.ndarray) -> float:
         combined |= m
     return combined.mean()
 
+def adjust_saturation(img: np.ndarray, factor: float) -> np.ndarray:
+    """Return a copy of ``img`` with saturation scaled by ``factor``."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[..., 1] = np.clip(hsv[..., 1] * factor, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+def read_health(frame: np.ndarray) -> Optional[int]:
+    """Return the current health as an integer if detected."""
+    h, w = frame.shape[:2]
+    region = frame[h-45:h-5, 5:140]
+    if region.size == 0:
+        return None
+
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    config = "--psm 7 -c tessedit_char_whitelist=0123456789"
+    text = pytesseract.image_to_string(thresh, config=config)
+    digits = re.findall(r"\d+", text)
+    try:
+        return int(digits[0]) if digits else None
+    except ValueError:
+        return None
+
 def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
+    """Return overall damage level and a rough direction vector."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = (cv2.inRange(hsv, (0,50,50),(10,255,255)) |
             cv2.inRange(hsv, (170,50,50),(180,255,255)))
@@ -146,10 +170,12 @@ def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
     right  = mask[:, -edge:].mean()
     top    = mask[:edge, :].mean()
     bottom = mask[-edge:, :].mean()
+
     level = max(left, right, top, bottom) / 255.0
     dx = (right - left) / 255.0
     dy = (bottom - top) / 255.0
     return level, dx, dy
+
 
 def detect_dashes(frame: np.ndarray) -> int:
     """Return the number of dash charges available (0-3)."""
