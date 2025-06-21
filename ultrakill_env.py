@@ -198,29 +198,28 @@ class UltrakillEnv(gym.Env):
         attempts = 0
         while True:
             frame = grab_frame()
-            if not is_score_screen(frame):
-                # Wait until the screen brightens after the fade-out
-                gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-                if gray_mean > 20:
+            gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+
+            # Treat very dark frames as scoreboard/fade-out and try skipping them
+            if gray_mean < 45:
+                if self.episode_id == 1:
+                    soft_reset()
+                else:
+                    send_scan(SCAN["JUMP"])
+                    send_scan(SCAN["JUMP"], True)
+                    time.sleep(1.0 + attempts * 0.5)
+
+                attempts += 1
+                if attempts > 5:  # Safety break
+                    soft_reset()
+                    time.sleep(3.0)
                     break
+
                 time.sleep(0.1)
                 continue
-                
-            # For first episode: use soft reset (Esc→Enter)
-            if self.episode_id == 1:
-                soft_reset()
-            # For subsequent episodes: press JUMP with proper timing
-            else:
-                # Press JUMP with increasing delays between attempts
-                send_scan(SCAN["JUMP"])
-                send_scan(SCAN["JUMP"], True)
-                time.sleep(1.0 + attempts * 0.5)  # 1s, 1.5s, 2s...
-            
-            attempts += 1
-            if attempts > 5:  # Safety break
-                soft_reset()  # Fallback to full reset
-                time.sleep(3.0)
-                break
+
+            # Once the screen brightens past the threshold, assume we're spawned
+            break
         
         # Make extra sure no keys are stuck before we walk in
         release_all_movement_keys()
