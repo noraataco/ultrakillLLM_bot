@@ -5,9 +5,11 @@ import numpy as np
 
 
 class EpsilonGreedy(gym.Wrapper):
-    """
-    With probability eps choose a random action instead of the policy’s.
-    Works for any Discrete action-space (your ULTRAKILL env has 10 actions).
+    """Epsilon-greedy exploration wrapper.
+
+    With probability ``eps`` the agent selects a random action instead of the
+    provided action. The environment must expose a :class:`~gymnasium.spaces.Discrete`
+    action space so that random actions can be sampled correctly.
     """
     def __init__(self, env: gym.Env, eps: float = 0.2):
         super().__init__(env)
