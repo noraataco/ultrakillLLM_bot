@@ -29,4 +29,5 @@ pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install stable-baselines3 opencv-python-headless pytesseract dxcam pywin32 pytest
 
-echo "Environment '$ENV_NAME' is ready."
+echo "Environment '$ENV_NAME' is ready. Dropping into a shell..."
+exec "$SHELL" -i
