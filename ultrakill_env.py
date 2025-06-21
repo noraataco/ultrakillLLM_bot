@@ -155,6 +155,12 @@ def detect_targets(frame: np.ndarray) -> float:
         combined |= m
     return combined.mean()
 
+def adjust_saturation(img: np.ndarray, factor: float) -> np.ndarray:
+    """Return a copy of ``img`` with saturation scaled by ``factor``."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[..., 1] = np.clip(hsv[..., 1] * factor, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
 def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
     """Return overall damage level and a rough direction vector.
 
