@@ -2,7 +2,7 @@
 import win32gui
 import win32con
 import time
-import threading, os, time
+import threading, os
 from ctypes import windll
 
 def lock_ultrakill_focus():
