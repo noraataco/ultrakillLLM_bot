@@ -227,7 +227,10 @@ class UltrakillEnv(gym.Env):
                 return frame, 0.0, False, False, {}
             else:
                 send_scan(SCAN["MOVE_FORWARD"], True)
+                f7hwc7-codex/understand-program-functionality
                 time.sleep(0.05)
+
+
                 self.in_warmup = False
 
         # from here on, normal unpack/action/reward logic…
@@ -270,10 +273,10 @@ class UltrakillEnv(gym.Env):
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
         gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = gray_img.mean()
-        if is_score_screen(frame) or gray < 12 or gray > 240:
+        if is_score_screen(frame) or gray_img.mean() < 12 or gray_img.mean() > 240:
             release_all_movement_keys()
             return frame, -50.0, True, False, {}
+        gray = gray_img.mean()
 
         target_score = detect_targets(frame)
         target_present = target_score > 0.02
@@ -281,9 +284,9 @@ class UltrakillEnv(gym.Env):
         # ——— Reward shaping ———
         diff         = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
         motion_frac  = (diff > 15).mean()
+        target_score = detect_targets(frame)
         hit_bonus    = red_center_bonus(frame) * HIT_BONUS
         offset       = detect_target_offset(frame)
-
         # base reward: time penalty + curiosity/velocity bonus
         r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
 
