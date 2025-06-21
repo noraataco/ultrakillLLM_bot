@@ -234,6 +234,8 @@ class UltrakillEnv(gym.Env):
         self.auto_forward_active = False
         self.auto_forward_start  = None
         self.auto_forward_end    = None
+        self.score_screen_frames = 0  # debounce counter
+        self.SCORE_FRAMES        = 5
 
     def reset(self, *, seed=None, options=None):
         self.episode_id += 1
@@ -326,8 +328,20 @@ class UltrakillEnv(gym.Env):
         self.health     = read_health(frame)
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-        if is_score_screen(frame) or gray < 12 or gray > 240:
+        if is_score_screen(frame):
+            self.score_screen_frames = min(
+                self.score_screen_frames + 1, self.SCORE_FRAMES
+            )
+        else:
+            self.score_screen_frames = max(self.score_screen_frames - 1, 0)
+
+        if (
+            self.score_screen_frames >= self.SCORE_FRAMES
+            or gray < 12
+            or gray > 240
+        ):
             release_all_movement_keys()
+            self.score_screen_frames = 0
             return frame, -50.0, True, False, {
                 "dash_count": self.dash_count,
                 "health": self.health
