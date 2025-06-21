@@ -229,6 +229,7 @@ class UltrakillEnv(gym.Env):
         self.prev_offset  = None
         self.t            = 0
         self.episode_id   = 0
+        self.resets       = 0
         self.dash_count   = 0
         self.health       = None
         self.auto_forward_active = False
@@ -239,6 +240,7 @@ class UltrakillEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         self.episode_id += 1
+        self.resets += 1
         self.t = 0
         release_all_movement_keys()
         time.sleep(0.5)
@@ -275,7 +277,11 @@ class UltrakillEnv(gym.Env):
         self.prev_frame = frame.copy()
         self.dash_count = detect_dashes(frame)
         self.health     = read_health(frame)
-        return frame, {"dash_count": self.dash_count, "health": self.health}
+        return frame, {
+            "dash_count": self.dash_count,
+            "health": self.health,
+            "resets": self.resets,
+        }
 
     def step(self, action):
         # handle our 4s auto-forward
@@ -358,7 +364,8 @@ class UltrakillEnv(gym.Env):
             self.score_screen_frames = 0
             return frame, -50.0, True, False, {
                 "dash_count": self.dash_count,
-                "health": self.health
+                "health": self.health,
+                "resets": self.resets,
             }
 
         # reward shaping...
@@ -418,7 +425,8 @@ class UltrakillEnv(gym.Env):
 
         return frame, float(r), done, False, {
             "dash_count": self.dash_count,
-            "health": self.health
+            "health": self.health,
+            "resets": self.resets,
         }
 
     def close(self):
