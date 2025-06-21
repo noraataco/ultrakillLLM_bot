@@ -5,18 +5,11 @@ import numpy as np
 
 
 class EpsilonGreedy(gym.Wrapper):
-"""Epsilon-greedy exploration wrapper.
+    """Epsilon-greedy exploration wrapper.
 
-# explore_wrapper.py
-
-import gymnasium as gym
-import numpy as np
-
-class EpsilonGreedy(gym.Wrapper):
-    """
     With probability ``eps`` choose a random action instead of the policy's.
-    The environment must expose a :class:`~gymnasium.spaces.Discrete`
-    action space so that random actions can be sampled correctly.
+    Works for any ``Discrete`` action space (the ULTRAKILL environment has
+    10 actions).
     """
 
     def __init__(self, env: gym.Env, eps: float = 0.2):
@@ -25,9 +18,8 @@ class EpsilonGreedy(gym.Wrapper):
         assert isinstance(env.action_space, gym.spaces.Discrete)
 
     def step(self, action):
-        # with probability eps, override the chosen action
         if np.random.rand() < self.eps:
-            # 40% of the time do a “trigger pull” action
+            # 40 % of random picks are a trigger pull
             if np.random.rand() < 0.4:
                 action = np.random.choice([
                     self.env.action_space.index("SHOOT"),
@@ -36,5 +28,4 @@ class EpsilonGreedy(gym.Wrapper):
             else:
                 action = self.action_space.sample()
         return self.env.step(action)
-
 
