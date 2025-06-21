@@ -150,7 +150,10 @@ def grab_frames() -> tuple[np.ndarray, np.ndarray]:
 # Helper to recognize the scoreboard / death screen
 def is_score_screen(frame: np.ndarray) -> bool:
     gray = frame.squeeze()
-    return gray.mean() < 40 and gray.std() < 15
+# Helper to recognize the scoreboard / death screen
+def is_score_screen(frame: np.ndarray) -> bool:
+    gray = frame.squeeze()
+    return gray.mean() < 55 and gray.std() < 20
 
 def detect_targets(frame: np.ndarray) -> float:
     """Return mean mask value for enemy-like colors."""
@@ -165,6 +168,7 @@ def detect_targets(frame: np.ndarray) -> float:
     for m in masks[1:]:
         combined |= m
     return combined.mean()
+
 
 # ── soft reset (ESC→Enter) ──────────────────────────────────
 VK_ESC, VK_ENTER = 0x1B, 0x0D

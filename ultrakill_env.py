@@ -108,7 +108,7 @@ def eye_level_bonus(frame: np.ndarray) -> float:
 def is_score_screen(frame: np.ndarray) -> bool:
     """Return True if the frame looks like the ULTRAKILL scoreboard."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return gray.mean() < 40 and gray.std() < 15
+    return gray.mean() < 55 and gray.std() < 20
 
 # Vision helpers
 def red_center_bonus(rgb: np.ndarray) -> float:
