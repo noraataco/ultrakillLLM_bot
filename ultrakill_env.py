@@ -13,6 +13,9 @@ import ctypes.wintypes as wintypes
 os.makedirs("debug_frames", exist_ok=True)
 user32 = ctypes.windll.user32
 
+# Create a single MSS instance to avoid handle leaks on Windows
+sct = mss.mss()
+
 # Constants
 TURN_PIXELS    = 100
 PIXEL_THRESH   = 0.005
@@ -62,17 +65,18 @@ def grab_frame() -> np.ndarray:
     try:
         wins = []
         win32gui.EnumWindows(
-            lambda h,p: p.append(h) if "ultrakill" in win32gui.GetWindowText(h).lower() else True,
+            lambda h, p: p.append(h) if "ultrakill" in win32gui.GetWindowText(h).lower() else True,
             wins
         )
         if not wins:
             img = np.zeros((360,640,3), np.uint8)
         else:
             hwnd = wins[0]
-            left,top,right,bot = win32gui.GetClientRect(hwnd)
-            x,y = win32gui.ClientToScreen(hwnd,(0,0))
-            monitor = {"top":y, "left":x, "width":right, "height":bot}
-            img = np.array(mss.mss().grab(monitor))
+            left, top, right, bot = win32gui.GetClientRect(hwnd)
+            x, y = win32gui.ClientToScreen(hwnd, (0,0))
+            monitor = {"top": y, "left": x, "width": right, "height": bot}
+            # Use global MSS instance to avoid repeatedly opening handles
+            img = np.array(sct.grab(monitor))
             if img.shape[2] == 4:
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             img = cv2.resize(img, (640,360))
@@ -336,5 +340,9 @@ class UltrakillEnv(gym.Env):
 
     def close(self):
         release_all_movement_keys()
+        try:
+            sct.close()
+        except Exception:
+            pass
         print("Environment closed - keys released")
 
