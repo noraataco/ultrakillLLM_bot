@@ -11,6 +11,7 @@ import torch
 import gymnasium as gym
 from gymnasium.wrappers import RecordEpisodeStatistics
 from stable_baselines3 import PPO
+from ppo_episodes import PPOEpisodes
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage, VecFrameStack
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
@@ -120,11 +121,12 @@ def main():
 
     print("Instantiating PPO agent")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model = PPO(
+    model = PPOEpisodes(
         "CnnPolicy",
         vec,
-        # collect only 256 steps per update instead of 1024
+        # collect experience from 250 lives before each update
         n_steps=256,
+        n_episodes=250,
         # use smaller minibatches
         batch_size=64,
         verbose=1,
