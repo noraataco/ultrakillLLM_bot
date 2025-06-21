@@ -35,6 +35,8 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP   = 0x0004
 
 STEP_DELAY = 0.02
+# Reward granted each step the agent stays alive
+SURVIVAL_BONUS = 0.01
 
 # Utility functions
 # Replace the existing pitch_penalty function with:
@@ -341,6 +343,8 @@ class UltrakillEnv(gym.Env):
 
         # keep your old sky/ceiling penalty too (you can scale it up):
         r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
+        # small bonus for every step survived
+        r += SURVIVAL_BONUS
 
         # 7) Finalize
         self.prev_frame = frame.copy()
