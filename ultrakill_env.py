@@ -91,6 +91,12 @@ def eye_level_bonus(frame: np.ndarray) -> float:
     eye_zone = frame[center_y-30:center_y+30, :]
     return 0.1 * (eye_zone.mean() > 100)  # Reward if not looking at dark ground
 
+# Scoreboard detection helper
+def is_score_screen(frame: np.ndarray) -> bool:
+    """Return True if the frame looks like the ULTRAKILL scoreboard."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return gray.mean() < 40 and gray.std() < 15
+
 # Vision helpers
 def red_center_bonus(rgb: np.ndarray) -> float:
     h,w = rgb.shape[:2]
@@ -173,15 +179,13 @@ class UltrakillEnv(gym.Env):
         lock_ultrakill_focus()
         time.sleep(0.2)
         
-        # Wait for UI to settle after death
-        time.sleep(2.0)  # Wait 2 seconds for scoreboard to appear
-        
+        # Wait briefly for the scoreboard to appear after death
+        time.sleep(2.0)
+
         attempts = 0
         while True:
             frame = grab_frame()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-            # Require some variance so we don't mistake the scoreboard for game play
-            if 12 < gray < 240 and frame.std() > 10:
+            if not is_score_screen(frame):
                 break
                 
             # For first episode: use soft reset (Esc→Enter)
@@ -205,6 +209,7 @@ class UltrakillEnv(gym.Env):
         # Start walking in
         send_scan(SCAN["MOVE_FORWARD"])
         self._spawn_time = time.time()
+        self.in_warmup = True
         
         # Get initial observation
         frame = grab_frame()
@@ -213,16 +218,16 @@ class UltrakillEnv(gym.Env):
 
     def step(self, action):
         elapsed = time.time() - self._spawn_time
-        # still walking in
-        if elapsed < self.WARMUP_TIME:
-            time.sleep(self.FRAME_DELAY)
-            frame = grab_frame()
-            self.prev_frame = frame.copy()
-            self.t += 1
-            return frame, 0.0, False, False, {}
-        # just after warmup: lift W
-        elif elapsed < self.WARMUP_TIME + self.FRAME_DELAY:
-            send_scan(SCAN["MOVE_FORWARD"], True)
+        if self.in_warmup:
+            if elapsed < self.WARMUP_TIME:
+                time.sleep(self.FRAME_DELAY)
+                frame = grab_frame()
+                self.prev_frame = frame.copy()
+                self.t += 1
+                return frame, 0.0, False, False, {}
+            else:
+                send_scan(SCAN["MOVE_FORWARD"], True)
+                self.in_warmup = False
 
         # from here on, normal unpack/action/reward logic…
         dx_move, dy_move, shoot_p = map(float, action)
@@ -263,10 +268,11 @@ class UltrakillEnv(gym.Env):
         # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-        if gray < 12 or gray > 240:
+        gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if is_score_screen(frame) or gray_img.mean() < 12 or gray_img.mean() > 240:
             release_all_movement_keys()
             return frame, -50.0, True, False, {}
+        gray = gray_img.mean()
 
         target_score = detect_targets(frame)
         target_present = target_score > 0.02
