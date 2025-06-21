@@ -176,6 +176,27 @@ def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
     dy = bottom - top
     return level, dx / 255.0, dy / 255.0
 
+def detect_dashes(frame: np.ndarray) -> int:
+    """Return the number of dash charges available (0-3)."""
+    h, w = frame.shape[:2]
+    # Region under the health bar in the lower left corner
+    x0 = int(w * 0.03)
+    x1 = int(w * 0.18)
+    y0 = int(h * 0.84)
+    y1 = int(h * 0.89)
+    bar = frame[y0:y1, x0:x1]
+    if bar.size == 0:
+        return 0
+    hsv = cv2.cvtColor(bar, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (80, 50, 180), (110, 255, 255))
+    seg_w = mask.shape[1] // 3
+    count = 0
+    for i in range(3):
+        seg = mask[:, i * seg_w:(i + 1) * seg_w]
+        if seg.mean() > 40:  # sufficiently blue
+            count += 1
+    return count
+
 
 class UltrakillEnv(gym.Env):
     """
@@ -206,6 +227,7 @@ class UltrakillEnv(gym.Env):
         self.prev_offset  = None
         self.t            = 0
         self.episode_id   = 0
+        self.dash_count   = 0
         self.auto_forward_active = False
         self.auto_forward_start  = None
         self.auto_forward_end    = None
@@ -258,7 +280,8 @@ class UltrakillEnv(gym.Env):
         # Get initial observation
         frame = grab_frame()
         self.prev_frame = frame.copy()
-        return frame, {}
+        self.dash_count = detect_dashes(frame)
+        return frame, {"dash_count": self.dash_count}
 
     def step(self, action):
         """Advance the environment by one frame."""
@@ -330,6 +353,7 @@ class UltrakillEnv(gym.Env):
         # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
+        self.dash_count = detect_dashes(frame)
         gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if is_score_screen(frame) or gray_img.mean() < 12 or gray_img.mean() > 240:
             release_all_movement_keys()
@@ -407,7 +431,8 @@ class UltrakillEnv(gym.Env):
         self.prev_frame = frame.copy()
         self.t += 1
         done = self.t >= 2000
-        return frame, float(r), done, False, {}
+        info = {"dash_count": self.dash_count}
+        return frame, float(r), done, False, info
 
     def close(self):
         release_all_movement_keys()
