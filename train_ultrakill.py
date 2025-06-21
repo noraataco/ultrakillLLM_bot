@@ -17,11 +17,12 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.preprocessing import is_image_space
 from stable_baselines3.common.callbacks import BaseCallback
-from utils import lock_ultrakill_focus, start_esc_watcher
+from utils import lock_ultrakill_focus, start_esc_watcher, start_pause_watcher, PAUSED
 from ultrakill_env import UltrakillEnv, release_all_movement_keys
-import threading 
+import threading
 
 start_esc_watcher()
+start_pause_watcher(on_pause=release_all_movement_keys)
 
 # pick GPU if available
 device = "cuda" if torch.cuda.is_available() else "cpu"
