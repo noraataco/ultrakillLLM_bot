@@ -4,7 +4,7 @@ import time, os, ctypes
 import mss, cv2, numpy as np, win32gui
 import gymnasium as gym
 from gymnasium.spaces import Box
-from utils import lock_ultrakill_focus
+from utils import lock_ultrakill_focus, PAUSED
 import pytesseract, re # type: ignore
 from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
@@ -300,6 +300,10 @@ class UltrakillEnv(gym.Env):
     def step(self, action):
         dx, dy, shoot = map(float, action)
         dx, dy = np.clip([dx, dy], -1, 1)
+
+        while PAUSED:
+            release_all_movement_keys()
+            time.sleep(0.05)
 
         # movement
         if not self.aim_only:

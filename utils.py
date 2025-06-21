@@ -2,7 +2,8 @@
 import win32gui
 import win32con
 import time
-import threading, os
+import threading
+import os
 from ctypes import windll
 
 def lock_ultrakill_focus():
@@ -44,6 +45,39 @@ def start_esc_watcher(poll_interval: float = 0.01):
         while True:
             if user32.GetAsyncKeyState(VK_ESC) & 0x8000:
                 os._exit(0)
+            time.sleep(poll_interval)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+# ---------------------------------------------------------------------------
+# Pause watcher
+# ---------------------------------------------------------------------------
+PAUSED = False
+
+def start_pause_watcher(on_pause=None, on_resume=None, poll_interval: float = 0.05):
+    """Toggle global ``PAUSED`` with the Backspace key."""
+    VK_BACK = 0x08
+    user32 = windll.user32
+
+    def _watch():
+        global PAUSED
+        while True:
+            if user32.GetAsyncKeyState(VK_BACK) & 1:
+                PAUSED = not PAUSED
+                if PAUSED:
+                    if on_pause:
+                        try:
+                            on_pause()
+                        except Exception:
+                            pass
+                    print("[paused] press Backspace to resume")
+                else:
+                    if on_resume:
+                        try:
+                            on_resume()
+                        except Exception:
+                            pass
+                    print("[resumed]")
             time.sleep(poll_interval)
 
     threading.Thread(target=_watch, daemon=True).start()

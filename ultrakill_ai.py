@@ -8,6 +8,7 @@ import atexit, signal, sys, traceback, ctypes
 from ctypes import wintypes
 import traceback
 from input_helper import send_scan, press_scancode, release_scancode, press_forward, SCAN
+from utils import start_pause_watcher, PAUSED
 
 
 ctypes.windll.kernel32.FreeConsole()
@@ -84,8 +85,6 @@ OLLAMA_URL   = os.getenv("OLLAMA_URL",  "http://10.3.1.101:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
 WARMUP_TIME  = 4.0
 
-# Pause toggle state (Backspace)
-PAUSED       = False
 
 # Allowed action keywords
 HOLD_ACTIONS = {"MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"}
@@ -342,25 +341,19 @@ def filter_action(action: str, target_present: bool) -> str:
         return "MOVE_FORWARD"
     return new_act
 
-# ─────────────── hotkey thread (F1 debug, Esc quit, Backspace pause) ──────────
+# ─────────────── hotkey thread (F1 debug, Esc quit) ──────────
 def hotkeys():
-    global DEBUG, PAUSED
-    VK_F1=0x70; VK_ESC=0x1B; VK_BACK=0x08
+    global DEBUG
+    VK_F1=0x70; VK_ESC=0x1B
     while True:
         if user32.GetAsyncKeyState(VK_F1)&1:
             DEBUG = not DEBUG
             print(f"[debug {'on' if DEBUG else 'off'}]")
         if user32.GetAsyncKeyState(VK_ESC)&1:
             os._exit(0)
-        if user32.GetAsyncKeyState(VK_BACK)&1:
-            PAUSED = not PAUSED
-            if PAUSED:
-                clear_all()
-                print("[paused] press Backspace to resume")
-            else:
-                print("[resumed]")
         time.sleep(0.05)
 threading.Thread(target=hotkeys, daemon=True).start()
+start_pause_watcher(on_pause=clear_all)
 
 # ─────────────── main loop ───────────────
 def wait_for_ultrakill(max_wait=10) -> bool:
