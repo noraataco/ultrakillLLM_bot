@@ -91,6 +91,12 @@ def eye_level_bonus(frame: np.ndarray) -> float:
     eye_zone = frame[center_y-30:center_y+30, :]
     return 0.1 * (eye_zone.mean() > 100)  # Reward if not looking at dark ground
 
+# Scoreboard detection helper
+def is_score_screen(frame: np.ndarray) -> bool:
+    """Return True if the frame looks like the ULTRAKILL scoreboard."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return gray.mean() < 40 and gray.std() < 15
+
 # Vision helpers
 def red_center_bonus(rgb: np.ndarray) -> float:
     h,w = rgb.shape[:2]
@@ -173,15 +179,13 @@ class UltrakillEnv(gym.Env):
         lock_ultrakill_focus()
         time.sleep(0.2)
         
-        # Wait for UI to settle after death
-        time.sleep(2.0)  # Wait 2 seconds for scoreboard to appear
-        
+        # Wait briefly for the scoreboard to appear after death
+        time.sleep(2.0)
+
         attempts = 0
         while True:
             frame = grab_frame()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-            # Require some variance so we don't mistake the scoreboard for game play
-            if 12 < gray < 240 and frame.std() > 10:
+            if not is_score_screen(frame):
                 break
                 
             # For first episode: use soft reset (Esc→Enter)
@@ -205,6 +209,7 @@ class UltrakillEnv(gym.Env):
         # Start walking in
         send_scan(SCAN["MOVE_FORWARD"])
         self._spawn_time = time.time()
+        self.in_warmup = True
         
         # Get initial observation
         frame = grab_frame()
@@ -213,16 +218,17 @@ class UltrakillEnv(gym.Env):
 
     def step(self, action):
         elapsed = time.time() - self._spawn_time
-        # still walking in
-        if elapsed < self.WARMUP_TIME:
-            time.sleep(self.FRAME_DELAY)
-            frame = grab_frame()
-            self.prev_frame = frame.copy()
-            self.t += 1
-            return frame, 0.0, False, False, {}
-        # just after warmup: lift W
-        elif elapsed < self.WARMUP_TIME + self.FRAME_DELAY:
-            send_scan(SCAN["MOVE_FORWARD"], True)
+        if self.in_warmup:
+            if elapsed < self.WARMUP_TIME:
+                time.sleep(self.FRAME_DELAY)
+                frame = grab_frame()
+                self.prev_frame = frame.copy()
+                self.t += 1
+                return frame, 0.0, False, False, {}
+            else:
+                send_scan(SCAN["MOVE_FORWARD"], True)
+                time.sleep(0.05)
+                self.in_warmup = False
 
         # from here on, normal unpack/action/reward logic…
         dx_move, dy_move, shoot_p = map(float, action)
@@ -263,8 +269,9 @@ class UltrakillEnv(gym.Env):
         # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-        if gray < 12 or gray > 240:
+        gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = gray_img.mean()
+        if is_score_screen(frame) or gray < 12 or gray > 240:
             release_all_movement_keys()
             return frame, -50.0, True, False, {}
 
@@ -274,7 +281,6 @@ class UltrakillEnv(gym.Env):
         # ——— Reward shaping ———
         diff         = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
         motion_frac  = (diff > 15).mean()
-        target_score = detect_targets(frame)
         hit_bonus    = red_center_bonus(frame) * HIT_BONUS
         offset       = detect_target_offset(frame)
 
@@ -302,36 +308,21 @@ class UltrakillEnv(gym.Env):
         if shoot_p > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
             r += ON_CENTER_BONUS * 1.5
 
-        # **NEW**: explicit upward‐pitch penalty
-        if offset:
-            up_error = max(0.0, -offset[1])  # offset[1] < 0 is looking up
-            r -= up_error * 0.5              # stronger penalty for looking up
+        # Vertical aim adjustments
+        if offset is not None:
+            up_error   = max(0.0, -offset[1])
+            down_bonus = max(0.0, offset[1])
+            r -= up_error * 0.5            # harsh penalty for looking up
+            r += down_bonus * 0.2          # mild bonus for looking down
 
-            down_bonus = max(0.0, offset[1]) # offset[1] > 0 is looking down
-            r += down_bonus * 0.2            # encourage looking down
+            if not target_present:
+                # Penalize deviation from center but reward slight steadiness
+                r -= 0.05 * abs(offset[1])
+                if abs(offset[1]) < 0.1:
+                    r += 0.01
 
         if not target_present:
             r += eye_level_bonus(frame)
-
-        if offset and not target_present:
-            # Penalize vertical deviation from center
-            r -= 0.05 * abs(offset[1])
-
-        # In step function:
-        if not target_present and abs(offset[1]) < 0.1:
-            r += 0.01  # Small continuous bonus
-
-        # In step() function:
-        if offset is not None:
-            # Apply vertical aim penalties/bonuses only when we have valid offset
-            up_error = max(0.0, -offset[1])
-            r -= up_error * 0.5
-            down_bonus = max(0.0, offset[1])
-            r += down_bonus * 0.2
-            
-            # Center hold bonus
-            if not target_present and abs(offset[1]) < 0.1:
-                r += 0.01
 
         # keep your old sky/ceiling penalty too (you can scale it up):
         r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
