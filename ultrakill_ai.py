@@ -387,6 +387,8 @@ def main():
         auto_forward_active = True
         auto_forward_end    = time.time() + WARMUP_TIME
         in_score_screen     = False
+        score_screen_frames = 0       # debounce counter for score screen
+        SCORE_FRAMES = 5              # frames required to (de)activate
         last_jump_time      = 0.0
         hold("MOVE_FORWARD")
 
@@ -404,6 +406,11 @@ def main():
             target_present = detect_targets(color_frame) > 0.02
 
             if is_score_screen(frame):
+                score_screen_frames = min(score_screen_frames + 1, SCORE_FRAMES)
+            else:
+                score_screen_frames = max(score_screen_frames - 1, 0)
+
+            if score_screen_frames >= SCORE_FRAMES:
                 if not in_score_screen:
                     in_score_screen = True
                     clear_all()
@@ -413,12 +420,11 @@ def main():
                     last_jump_time = time.time()
                 time.sleep(TICK_RATE)
                 continue
-            else:
-                if in_score_screen:
-                    in_score_screen = False
-                    auto_forward_active = True
-                    auto_forward_end = time.time() + WARMUP_TIME
-                    hold("MOVE_FORWARD")
+            elif in_score_screen and score_screen_frames == 0:
+                in_score_screen = False
+                auto_forward_active = True
+                auto_forward_end = time.time() + WARMUP_TIME
+                hold("MOVE_FORWARD")
 
             if auto_forward_active:
                 if time.time() >= auto_forward_end:
