@@ -5,7 +5,7 @@ import mss, cv2, numpy as np, win32gui
 import gymnasium as gym
 from gymnasium.spaces import Box
 from utils import lock_ultrakill_focus
-import pytesseract, re
+import pytesseract, re # type: ignore
 from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
@@ -244,28 +244,32 @@ class UltrakillEnv(gym.Env):
         time.sleep(0.5)
         lock_ultrakill_focus()
         time.sleep(0.2)
-        time.sleep(2.0)  # wait for death screen fade
+        # give Unreal time to unload the last death screen
+        time.sleep(2.0)
 
-        attempts = 0
-        while True:
+        # 1) keep jumping until you see the scene load (not just bright, but non-score-screen)
+        for _ in range(10):
             frame = grab_frame()
-            if cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean() >= 45:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+            if gray >= 45 and not is_score_screen(frame):
                 break
-            if self.episode_id == 1:
-                soft_reset()
-            else:
-                send_scan(SCAN["JUMP"]); send_scan(SCAN["JUMP"], True)
-            attempts += 1
-            if attempts > 5:
-                soft_reset(); time.sleep(3.0); break
+            send_scan(SCAN["JUMP"]); send_scan(SCAN["JUMP"], True)
             time.sleep(0.1)
+        else:
+            # if we never broke out, fall back
+            soft_reset()
+            time.sleep(3.0)
 
-        release_all_movement_keys()
-        send_scan(SCAN["MOVE_FORWARD"])
+        # 2) now wait *off* the score screen so you start warmup in the actual map
+        while is_score_screen(frame):
+            time.sleep(0.1)
+            frame = grab_frame()
+
+        # now start the 4s warmup forward
         self.auto_forward_active = True
-        # reset timing markers so warmup duration triggers on every episode
-        self.auto_forward_start = None
-        self.auto_forward_end   = None
+        self.auto_forward_start  = time.time()
+        self.auto_forward_end    = self.auto_forward_start + self.WARMUP_TIME
+
 
         frame = grab_frame()
         self.prev_frame = frame.copy()
@@ -274,18 +278,25 @@ class UltrakillEnv(gym.Env):
         return frame, {"dash_count": self.dash_count, "health": self.health}
 
     def step(self, action):
+        # handle our 4s auto-forward
         auto_forward = False
         if self.auto_forward_active:
-            if self.auto_forward_start is None:
-                now = time.time()
-                self.auto_forward_start = now
-                self.auto_forward_end   = now + self.WARMUP_TIME
+            # on first step after reset, actually press forward
+            if not hasattr(self, "_forward_pressed"):
+                send_scan(SCAN["MOVE_FORWARD"])
+                self._forward_pressed = True
+
+            # still within warmup window?
             if time.time() < self.auto_forward_end:
                 auto_forward = True
             else:
-                send_scan(SCAN["MOVE_FORWARD"], True)
-                time.sleep(0.05)
-                self.auto_forward_active = False
+                # warmup done *and* ensure we're off the score screen
+                if not is_score_screen(grab_frame()):
+                    send_scan(SCAN["MOVE_FORWARD"], True)
+                    time.sleep(0.05)
+                    self.auto_forward_active = False
+                else:
+                    auto_forward = True  # hold until screen clears
 
         dx_move, dy_move, shoot_p = map(float, action)
         dx_move, dy_move = np.clip([dx_move, dy_move], -1, 1)
