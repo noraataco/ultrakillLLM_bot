@@ -5,6 +5,7 @@ import mss, cv2, numpy as np, win32gui
 import gymnasium as gym
 from gymnasium.spaces import Box
 from utils import lock_ultrakill_focus
+import pytesseract, re
 from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
@@ -176,6 +177,26 @@ def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
     dy = bottom - top
     return level, dx / 255.0, dy / 255.0
 
+# --- New: read health from on-screen HUD ---
+def read_health(frame: np.ndarray) -> Optional[int]:
+    """Return the current health as an integer if detected."""
+    h, w = frame.shape[:2]
+    region = frame[h-45:h-5, 5:140]
+    if region.size == 0:
+        return None
+
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    config = "--psm 7 -c tessedit_char_whitelist=0123456789"
+    text = pytesseract.image_to_string(thresh, config=config)
+    digits = re.findall(r"\d+", text)
+    if digits:
+        try:
+            return int(digits[0])
+        except ValueError:
+            return None
+    return None
+
 
 class UltrakillEnv(gym.Env):
     """
@@ -206,6 +227,7 @@ class UltrakillEnv(gym.Env):
         self.prev_offset  = None
         self.t            = 0
         self.episode_id   = 0
+        self.health       = None
         self.auto_forward_active = False
         self.auto_forward_start  = None
         self.auto_forward_end    = None
@@ -258,7 +280,8 @@ class UltrakillEnv(gym.Env):
         # Get initial observation
         frame = grab_frame()
         self.prev_frame = frame.copy()
-        return frame, {}
+        self.health = read_health(frame)
+        return frame, {"health": self.health}
 
     def step(self, action):
         """Advance the environment by one frame."""
@@ -330,10 +353,11 @@ class UltrakillEnv(gym.Env):
         # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
+        self.health = read_health(frame)
         gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if is_score_screen(frame) or gray_img.mean() < 12 or gray_img.mean() > 240:
             release_all_movement_keys()
-            return frame, -50.0, True, False, {}
+            return frame, -50.0, True, False, {"health": self.health}
         gray = gray_img.mean()
 
         target_score = detect_targets(frame)
@@ -407,7 +431,7 @@ class UltrakillEnv(gym.Env):
         self.prev_frame = frame.copy()
         self.t += 1
         done = self.t >= 2000
-        return frame, float(r), done, False, {}
+        return frame, float(r), done, False, {"health": self.health}
 
     def close(self):
         release_all_movement_keys()
