@@ -88,6 +88,11 @@ WARMUP_TIME  = 4.0
 HOLD_ACTIONS = {"MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"}
 TAP_ACTIONS  = {"JUMP"}
 SPECIALS     = {"DASH","SHOOT","ALT_FIRE", "TURN_LEFT","TURN_RIGHT","STOP_ALL"}
+VERTICAL_ACTIONS = {
+    "LOOK_UP","LOOK_DOWN",
+    "TURN_LEFT_UP","TURN_LEFT_DOWN",
+    "TURN_RIGHT_UP","TURN_RIGHT_DOWN"
+}
 
 
 
@@ -125,22 +130,41 @@ def get_ultrakill_rect():
 
 RECT = get_ultrakill_rect()
 
-def grab_frame():
+def grab_frames() -> tuple[np.ndarray, np.ndarray]:
+    """Return a small grayscale frame and a color frame for target detection."""
     try:
         img = camera.grab(region=RECT)          # only the game area
         if img is None:
             raise RuntimeError("grab returned None – window probably minimized")
-        gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        color = cv2.resize(img, (160,120), interpolation=cv2.INTER_AREA)
+        gray  = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (84,84), interpolation=cv2.INTER_AREA)
-        return small[...,None].astype(np.uint8)
+        return small[...,None].astype(np.uint8), color
     except Exception as e:
         logging.error(f"Capture failed: {e}")
-        return np.zeros((84,84,1), np.uint8)  # Return blank frame instead of None
+        return (
+            np.zeros((84,84,1), np.uint8),
+            np.zeros((120,160,3), np.uint8)
+        )
 
 # Helper to recognize the scoreboard / death screen
 def is_score_screen(frame: np.ndarray) -> bool:
     gray = frame.squeeze()
     return gray.mean() < 40 and gray.std() < 15
+
+def detect_targets(frame: np.ndarray) -> float:
+    """Return mean mask value for enemy-like colors."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    masks = [
+        cv2.inRange(hsv, (0,120,70),  (10,255,255)),
+        cv2.inRange(hsv, (170,120,70),(180,255,255)),
+        cv2.inRange(hsv, (100,120,70),(130,255,255)),
+        cv2.inRange(hsv, (15,100,100),(40,255,255)),
+    ]
+    combined = masks[0]
+    for m in masks[1:]:
+        combined |= m
+    return combined.mean()
 
 # ── soft reset (ESC→Enter) ──────────────────────────────────
 VK_ESC, VK_ENTER = 0x1B, 0x0D
@@ -292,6 +316,25 @@ def ask_llm():
     history.append(action)
     return action
 
+def filter_action(action: str, target_present: bool) -> str:
+    """Suppress vertical camera moves when no target is visible."""
+    if target_present:
+        return action
+
+    mapping = {
+        "LOOK_UP": None,
+        "LOOK_DOWN": None,
+        "TURN_LEFT_UP": "TURN_LEFT",
+        "TURN_RIGHT_UP": "TURN_RIGHT",
+        "TURN_LEFT_DOWN": "TURN_LEFT",
+        "TURN_RIGHT_DOWN": "TURN_RIGHT",
+    }
+    new_act = mapping.get(action, action)
+    if new_act is None:
+        # default to a simple forward move to keep orientation level
+        return "MOVE_FORWARD"
+    return new_act
+
 # ─────────────── hotkey thread (F1 toggle, Esc exit) ──────────
 def hotkeys():
     global DEBUG; VK_F1=0x70; VK_ESC=0x1B
@@ -352,7 +395,9 @@ def main():
         while True:
             frame_counter += 1
 
-            frame = grab_frame()
+            gray_frame, color_frame = grab_frames()
+            frame = gray_frame
+            target_present = detect_targets(color_frame) > 0.02
 
             if is_score_screen(frame):
                 if not in_score_screen:
@@ -386,7 +431,7 @@ def main():
                 focus_ultrakill()
 
             # ── ask the LLM / PPO policy ─────────────────────────
-            act = ask_llm()
+            act = filter_action(ask_llm(), target_present)
 
             if DEBUG:
                 print("LLM →", act)
