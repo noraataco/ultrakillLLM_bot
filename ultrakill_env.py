@@ -227,6 +227,10 @@ class UltrakillEnv(gym.Env):
                 return frame, 0.0, False, False, {}
             else:
                 send_scan(SCAN["MOVE_FORWARD"], True)
+                f7hwc7-codex/understand-program-functionality
+                time.sleep(0.05)
+
+
                 self.in_warmup = False
 
         # from here on, normal unpack/action/reward logic…
@@ -283,7 +287,6 @@ class UltrakillEnv(gym.Env):
         target_score = detect_targets(frame)
         hit_bonus    = red_center_bonus(frame) * HIT_BONUS
         offset       = detect_target_offset(frame)
-
         # base reward: time penalty + curiosity/velocity bonus
         r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
 
@@ -308,36 +311,21 @@ class UltrakillEnv(gym.Env):
         if shoot_p > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
             r += ON_CENTER_BONUS * 1.5
 
-        # **NEW**: explicit upward‐pitch penalty
-        if offset:
-            up_error = max(0.0, -offset[1])  # offset[1] < 0 is looking up
-            r -= up_error * 0.5              # stronger penalty for looking up
+        # Vertical aim adjustments
+        if offset is not None:
+            up_error   = max(0.0, -offset[1])
+            down_bonus = max(0.0, offset[1])
+            r -= up_error * 0.5            # harsh penalty for looking up
+            r += down_bonus * 0.2          # mild bonus for looking down
 
-            down_bonus = max(0.0, offset[1]) # offset[1] > 0 is looking down
-            r += down_bonus * 0.2            # encourage looking down
+            if not target_present:
+                # Penalize deviation from center but reward slight steadiness
+                r -= 0.05 * abs(offset[1])
+                if abs(offset[1]) < 0.1:
+                    r += 0.01
 
         if not target_present:
             r += eye_level_bonus(frame)
-
-        if offset and not target_present:
-            # Penalize vertical deviation from center
-            r -= 0.05 * abs(offset[1])
-
-        # In step function:
-        if not target_present and abs(offset[1]) < 0.1:
-            r += 0.01  # Small continuous bonus
-
-        # In step() function:
-        if offset is not None:
-            # Apply vertical aim penalties/bonuses only when we have valid offset
-            up_error = max(0.0, -offset[1])
-            r -= up_error * 0.5
-            down_bonus = max(0.0, offset[1])
-            r += down_bonus * 0.2
-            
-            # Center hold bonus
-            if not target_present and abs(offset[1]) < 0.1:
-                r += 0.01
 
         # keep your old sky/ceiling penalty too (you can scale it up):
         r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
