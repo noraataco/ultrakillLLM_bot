@@ -7,8 +7,9 @@ This project contains tools to train and run a reinforcement learning agent for 
 2. Run the setup script to create and populate the `ultrakill` environment:
 
 ```bash
-bash setup_conda_env.sh
-conda activate ultrakill
+bash setup_conda_env.sh        # Linux
+setup_conda_env_windows.bat    # Windows
+# The environment is active when the script finishes
 ```
 
 The script installs Python 3.11 along with all required packages.
