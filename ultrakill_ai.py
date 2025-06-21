@@ -82,6 +82,7 @@ TURN_PIXELS  = 40              # mouse dx per TURN_LEFT/RIGHT tick
 TURN_HOLD_MS = 0.0             # >0 → continuous turn (0 = one flick)
 OLLAMA_URL   = os.getenv("OLLAMA_URL",  "http://10.3.1.101:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
+WARMUP_TIME  = 4.0
 
 # Allowed action keywords
 HOLD_ACTIONS = {"MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"}
@@ -135,6 +136,11 @@ def grab_frame():
     except Exception as e:
         logging.error(f"Capture failed: {e}")
         return np.zeros((84,84,1), np.uint8)  # Return blank frame instead of None
+
+# Helper to recognize the scoreboard / death screen
+def is_score_screen(frame: np.ndarray) -> bool:
+    gray = frame.squeeze()
+    return gray.mean() < 40 and gray.std() < 15
 
 # ── soft reset (ESC→Enter) ──────────────────────────────────
 VK_ESC, VK_ENTER = 0x1B, 0x0D
@@ -331,6 +337,12 @@ def main():
         # ────────────────────────────────────────────────────────────
         # 3.  Main loop
         # ────────────────────────────────────────────────────────────
+        auto_forward_active = True
+        auto_forward_end    = time.time() + WARMUP_TIME
+        in_score_screen     = False
+        last_jump_time      = 0.0
+        hold("MOVE_FORWARD")
+
         last_action        = None
         action_repeat_cnt  = 0
         turn_accumulator_x = 0
@@ -339,6 +351,35 @@ def main():
 
         while True:
             frame_counter += 1
+
+            frame = grab_frame()
+
+            if is_score_screen(frame):
+                if not in_score_screen:
+                    in_score_screen = True
+                    clear_all()
+                    last_jump_time = 0.0
+                if time.time() - last_jump_time > 1.0:
+                    tap("JUMP")
+                    last_jump_time = time.time()
+                time.sleep(TICK_RATE)
+                continue
+            else:
+                if in_score_screen:
+                    in_score_screen = False
+                    auto_forward_active = True
+                    auto_forward_end = time.time() + WARMUP_TIME
+                    hold("MOVE_FORWARD")
+
+            if auto_forward_active:
+                if time.time() >= auto_forward_end:
+                    release("MOVE_FORWARD")
+                    auto_forward_active = False
+                else:
+                    if "MOVE_FORWARD" not in HELD:
+                        hold("MOVE_FORWARD")
+                    time.sleep(TICK_RATE)
+                    continue
 
             # re-focus every 30 ticks (~0.6 s) in case something stole it
             if frame_counter % 30 == 0:
