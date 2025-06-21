@@ -5,7 +5,7 @@ import mss, cv2, numpy as np, win32gui
 import gymnasium as gym
 from gymnasium.spaces import Box
 from utils import lock_ultrakill_focus
-from ultrakill_ai import send_scan, SCAN, mouse_click
+from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
 
@@ -27,9 +27,29 @@ ON_CENTER_BONUS= 0.2
 HIT_BONUS      = 1.5
 TARGET_PENALTY = -0.02
 
+MOUSEEVENTF_MOVE     = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP   = 0x0004
+
+STEP_DELAY = 0.02
+
 # Utility functions
-def pitch_penalty(frame: np.ndarray) -> float:
-    return 0.1 if (frame[-20:].mean() - frame[:20].mean()) < -15 else 0.0
+# Replace the existing pitch_penalty function with:
+def pitch_penalty(frame: np.ndarray, target_present: bool) -> float:
+    """
+    Penalize looking at ground/sky, but allow when enemies are present
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    top = gray[:20].mean()
+    bottom = gray[-20:].mean()
+    
+    # Only apply penalty when no enemies are visible
+    if not target_present:
+        if bottom - top < -15:  # Looking down at ground
+            return 0.3
+        elif top - bottom > 15:  # Looking up at sky
+            return 0.2
+    return 0.0
 
 def release_all_movement_keys():
     for key in ["MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"]:
@@ -38,21 +58,38 @@ def release_all_movement_keys():
 
 # Screen capture
 def grab_frame() -> np.ndarray:
+    t0 = time.time()
     try:
         wins = []
-        win32gui.EnumWindows(lambda h,p: p.append(h) if "ultrakill" in win32gui.GetWindowText(h).lower() else True, wins)
+        win32gui.EnumWindows(
+            lambda h,p: p.append(h) if "ultrakill" in win32gui.GetWindowText(h).lower() else True,
+            wins
+        )
         if not wins:
-            return np.zeros((360,640,3), np.uint8)
-        hwnd = wins[0]
-        left,top,right,bot = win32gui.GetClientRect(hwnd)
-        x,y = win32gui.ClientToScreen(hwnd,(0,0))
-        monitor = {"top":y, "left":x, "width":right, "height":bot}
-        img = np.array(mss.mss().grab(monitor))
-        if img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        return cv2.resize(img, (640,360))
+            img = np.zeros((360,640,3), np.uint8)
+        else:
+            hwnd = wins[0]
+            left,top,right,bot = win32gui.GetClientRect(hwnd)
+            x,y = win32gui.ClientToScreen(hwnd,(0,0))
+            monitor = {"top":y, "left":x, "width":right, "height":bot}
+            img = np.array(mss.mss().grab(monitor))
+            if img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            img = cv2.resize(img, (640,360))
     except Exception:
-        return np.zeros((360,640,3), np.uint8)
+        img = np.zeros((360,640,3), np.uint8)
+    dt = time.time() - t0
+    if dt > STEP_DELAY:
+        print(f"[warn] grab_frame took {dt:.3f}s (> {STEP_DELAY}s)")
+    return img
+
+def eye_level_bonus(frame: np.ndarray) -> float:
+    """Reward for keeping crosshair near eye-level (center of screen)"""
+    h, w = frame.shape[:2]
+    center_y = h // 2
+    # Check a horizontal strip around eye-level (20% of screen height)
+    eye_zone = frame[center_y-30:center_y+30, :]
+    return 0.1 * (eye_zone.mean() > 100)  # Reward if not looking at dark ground
 
 # Vision helpers
 def red_center_bonus(rgb: np.ndarray) -> float:
@@ -101,95 +138,202 @@ class UltrakillEnv(gym.Env):
     """
     Wrapper that walks forward on reset, then hands off to the agent for aiming/shooting.
     """
-    WARMUP_TIME = 4.0
-    FRAME_DELAY = 0.02
+    WARMUP_TIME  = 4.0    # seconds
+    FRAME_DELAY  = STEP_DELAY
 
     def __init__(self, *, aim_only: bool=False):
         super().__init__()
         self.aim_only = aim_only
-        self.action_space = gym.spaces.Box(
-            low=np.array([-1,-1,0], dtype=np.float32),
-            high=np.array([1,1,1], dtype=np.float32),
-            dtype=np.float32
+
+        # **here**: explicitly pass the shape tuple
+        self.observation_space = Box(
+            low=0,
+            high=255,
+            shape=(360, 640, 3),
+            dtype=np.uint8,
         )
-        self.observation_space = Box(0,255,(360,640,3), dtype=np.uint8)
-        self.prev_frame = None
-        self.prev_offset = None
-        self.t = 0
-        self.episode_id = 0
-        self.in_warmup = False
+
+        self.action_space = gym.spaces.Box(
+            low=np.array([-1, -1, 0], dtype=np.float32),
+            high=np.array([1,  1, 1], dtype=np.float32),
+            dtype=np.float32,
+        )
+
+        self.prev_frame   = None
+        self.prev_offset  = None
+        self.t            = 0
+        self.episode_id   = 0
+        self.in_warmup    = False
 
     def reset(self, *, seed=None, options=None):
-        # skip warmup on the very first reset
-        first = (self.episode_id == 0)
-        print(f"\n=== RESET CALLED (first={first}) ===", flush=True)
+        self.episode_id += 1
+        self.t = 0
         release_all_movement_keys()
         time.sleep(0.5)
         lock_ultrakill_focus()
         time.sleep(0.2)
-
-        if not first:
-            # only do walk-in after initial load
-            print(f"→ BLOCKING WALK-IN: holding FORWARD for {self.WARMUP_TIME}s …", flush=True)
-            send_scan(SCAN["MOVE_FORWARD"])  # key-down
-            self._warmup_start = time.time()
-            self.in_warmup = True
-        else:
-            self.in_warmup = False
-
+        
+        # Wait for UI to settle after death
+        time.sleep(2.0)  # Wait 2 seconds for scoreboard to appear
+        
+        attempts = 0
+        while True:
+            frame = grab_frame()
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+            if 12 < gray < 240:
+                break
+                
+            # For first episode: use soft reset (Esc→Enter)
+            if self.episode_id == 1:
+                soft_reset()
+            # For subsequent episodes: press JUMP with proper timing
+            else:
+                # Press JUMP with increasing delays between attempts
+                send_scan(SCAN["JUMP"])
+                send_scan(SCAN["JUMP"], True)
+                time.sleep(1.0 + attempts * 0.5)  # 1s, 1.5s, 2s...
+            
+            attempts += 1
+            if attempts > 5:  # Safety break
+                soft_reset()  # Fallback to full reset
+                time.sleep(3.0)
+                break
+        
+        # Start walking in
+        send_scan(SCAN["MOVE_FORWARD"])
+        self._spawn_time = time.time()
+        
+        # Get initial observation
         frame = grab_frame()
         self.prev_frame = frame.copy()
-        self.prev_offset = None
-        self.t = 0
-        self.episode_id += 1
-        print(f"=== RESET DONE (episode {self.episode_id}) ===", flush=True)
         return frame, {}
 
-    def step(self, action: np.ndarray):
-        if self.in_warmup:
-            if time.time() - self._warmup_start >= self.WARMUP_TIME:
-                send_scan(SCAN["MOVE_FORWARD"], True)
-                self.in_warmup = False
+    def step(self, action):
+        elapsed = time.time() - self._spawn_time
+        # still walking in
+        if elapsed < self.WARMUP_TIME:
             time.sleep(self.FRAME_DELAY)
             frame = grab_frame()
             self.prev_frame = frame.copy()
             self.t += 1
             return frame, 0.0, False, False, {}
+        # just after warmup: lift W
+        elif elapsed < self.WARMUP_TIME + self.FRAME_DELAY:
+            send_scan(SCAN["MOVE_FORWARD"], True)
 
-        dx,dy,shoot_p = map(float, action)
-        dx,dy = np.clip([dx,dy], -1,1)
-        user32.mouse_event(0x0001, int(dx*TURN_PIXELS), int(dy*TURN_PIXELS), 0,0)
+        # from here on, normal unpack/action/reward logic…
+        dx_move, dy_move, shoot_p = map(float, action)
+        dx_move, dy_move          = np.clip([dx_move, dy_move], -1, 1)
+
+        # 2) Full-body locomotion if not aim-only
+        if not self.aim_only:
+            # forward/back
+            if   dx_move >  0.1:
+                send_scan(SCAN["MOVE_FORWARD"])
+            elif dx_move < -0.1:
+                send_scan(SCAN["MOVE_BACK"], True)
+            else:
+                send_scan(SCAN["MOVE_FORWARD"], True)
+                send_scan(SCAN["MOVE_BACK"],    True)
+
+            # strafe
+            if   dy_move >  0.1:
+                send_scan(SCAN["MOVE_RIGHT"])
+            elif dy_move < -0.1:
+                send_scan(SCAN["MOVE_LEFT"], True)
+            else:
+                send_scan(SCAN["MOVE_RIGHT"], True)
+                send_scan(SCAN["MOVE_LEFT"],  True)
+
+        # 3) Always turn camera
+        user32.mouse_event(
+            MOUSEEVENTF_MOVE,
+            int(dx_move * TURN_PIXELS),
+            int(dy_move * TURN_PIXELS),
+            0, 0
+        )
+
+        # 4) Shooting
         if shoot_p > 0.5:
             mouse_click()
+
+        # 6) Normal frame + reward
         time.sleep(self.FRAME_DELAY)
         frame = grab_frame()
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
         if gray < 12 or gray > 240:
             release_all_movement_keys()
             return frame, -50.0, True, False, {}
 
-        diff = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
-        motion_frac = (diff > 15).mean()
         target_score = detect_targets(frame)
-        hit_bonus = red_center_bonus(frame) * HIT_BONUS
-        offset = detect_target_offset(frame)
+        target_present = target_score > 0.02
 
-        r = -0.02 + (CURI_SCALE+VEL_SCALE)*(diff.mean()/255)
-        if target_score>0.01:
-            r += TURN_R*(abs(dx)+abs(dy))
-        if shoot_p>0.5 and target_score<0.02:
+        # ——— Reward shaping ———
+        diff         = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
+        motion_frac  = (diff > 15).mean()
+        target_score = detect_targets(frame)
+        hit_bonus    = red_center_bonus(frame) * HIT_BONUS
+        offset       = detect_target_offset(frame)
+
+        # base reward: time penalty + curiosity/velocity bonus
+        r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
+
+        # only reward turning when there’s actually something to turn toward
+        if target_score > 0.01:
+            r += TURN_R * (abs(dx_move) + abs(dy_move))
+
+        # penalize blind firing
+        if shoot_p > 0.5 and target_score < 0.02:
             r -= 0.5
-        if target_score>0.02:
-            r += (2.0+2.0*target_score+hit_bonus) if shoot_p>0.5 else -0.005
-        else:
-            r += 0.02*motion_frac
-        if shoot_p>0.5 and offset and abs(offset[0])<0.1 and abs(offset[1])<0.1:
-            r += ON_CENTER_BONUS*1.5
-        if offset:
-            vert_err = max(0.0, abs(offset[1]) - 0.5)
-            r -= vert_err*0.2
-        r -= pitch_penalty(frame)
 
+        # target engagement
+        if target_score > 0.02:
+            if shoot_p > 0.5:
+                r += 2.0 + 2.0 * target_score + hit_bonus
+            else:
+                r -= 0.005
+        else:
+            r += 0.02 * motion_frac
+
+        # on-center bonus
+        if shoot_p > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
+            r += ON_CENTER_BONUS * 1.5
+
+        # **NEW**: explicit upward‐pitch penalty
+        if offset:
+            up_error = max(0.0, -offset[1])  # offset[1] < 0 is looking up
+            r -= up_error * 0.5              # stronger penalty for looking up
+
+            down_bonus = max(0.0, offset[1]) # offset[1] > 0 is looking down
+            r += down_bonus * 0.2            # encourage looking down
+
+        if not target_present:
+            r += eye_level_bonus(frame)
+
+        if offset and not target_present:
+            # Penalize vertical deviation from center
+            r -= 0.05 * abs(offset[1])
+
+        # In step function:
+        if not target_present and abs(offset[1]) < 0.1:
+            r += 0.01  # Small continuous bonus
+
+        # In step() function:
+        if offset is not None:
+            # Apply vertical aim penalties/bonuses only when we have valid offset
+            up_error = max(0.0, -offset[1])
+            r -= up_error * 0.5
+            down_bonus = max(0.0, offset[1])
+            r += down_bonus * 0.2
+            
+            # Center hold bonus
+            if not target_present and abs(offset[1]) < 0.1:
+                r += 0.01
+
+        # keep your old sky/ceiling penalty too (you can scale it up):
+        r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
+
+        # 7) Finalize
         self.prev_frame = frame.copy()
         self.t += 1
         done = self.t >= 2000

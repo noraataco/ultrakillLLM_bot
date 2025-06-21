@@ -70,8 +70,10 @@ class Downsample(gym.ObservationWrapper):
         return observation[::self.ratio, ::self.ratio, :]
 
 def make_env():
-    env = UltrakillEnv(aim_only=True)
-    env = ChannelValidator(env)  # Add channel validation
+    env = UltrakillEnv(aim_only=False)
+    env = ChannelValidator(env)
+    # now downsample by 2 → halves both height and width
+    env = Downsample(env, ratio=2)
     return Monitor(env)
 
 def _esc_watcher():
@@ -102,11 +104,6 @@ def main():
     if test_obs.shape[-1] != 3:
         print(f"Error: Expected 3 channels, got {test_obs.shape[-1]}")
         return
-    for env in vec.envs:
-        if hasattr(env, 'in_warmup'):
-            env.in_warmup = False
-    release_all_movement_keys()
-    print("Cleared dummy warmup – first real episode starts immediately")
     # Proper frame stacking for color images
     vec = VecTransposeImage(vec)  # (H,W,C) -> (C,H,W)
     print("Observation space before stacking:", vec.observation_space)
@@ -126,8 +123,10 @@ def main():
     model = PPO(
         "CnnPolicy",
         vec,
-        n_steps=1024,
-        batch_size=256,
+        # collect only 256 steps per update instead of 1024
+        n_steps=256,
+        # use smaller minibatches
+        batch_size=64,
         verbose=1,
         device=device,
         tensorboard_log="./tb_logs",
@@ -147,7 +146,7 @@ def main():
     print("Starting training (2000000 timesteps, checkpoint every 200000 steps)")
     print("Press ESC to stop training and save model")
     print("Initial warmup period...")
-    time.sleep(5.0)  # Extra time for game to stabilize
+    time.sleep(2.0)  # Extra time for game to stabilize
     
     # Windows-specific key detection
     def is_esc_pressed():
@@ -175,7 +174,10 @@ def main():
         model.env = None
         model._last_obs = None
         model.rollout_buffer = None
-        model.save(f"ppo_ultrakill_final_{timestamp}")
+        model.save(
+            f"ppo_ultrakill_final_{timestamp}",
+            exclude=["env", "policy.optimizer"]  # Skip problematic objects
+        )
 
         print("Closing environment and releasing keys...", flush=True)
         vec.close()
