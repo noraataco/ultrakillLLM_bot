@@ -84,6 +84,9 @@ OLLAMA_URL   = os.getenv("OLLAMA_URL",  "http://10.3.1.101:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
 WARMUP_TIME  = 4.0
 
+# Pause toggle state (Backspace)
+PAUSED       = False
+
 # Allowed action keywords
 HOLD_ACTIONS = {"MOVE_FORWARD","MOVE_BACK","MOVE_LEFT","MOVE_RIGHT"}
 TAP_ACTIONS  = {"JUMP"}
@@ -339,14 +342,25 @@ def filter_action(action: str, target_present: bool) -> str:
         return "MOVE_FORWARD"
     return new_act
 
-# ─────────────── hotkey thread (F1 toggle, Esc exit) ──────────
+# ─────────────── hotkey thread (F1 debug, Esc quit, Backspace pause) ──────────
 def hotkeys():
-    global DEBUG; VK_F1=0x70; VK_ESC=0x1B
+    global DEBUG, PAUSED
+    VK_F1=0x70; VK_ESC=0x1B; VK_BACK=0x08
     while True:
-        if user32.GetAsyncKeyState(VK_F1)&1: DEBUG=not DEBUG; print(f"[debug {'on' if DEBUG else 'off'}]")
-        if user32.GetAsyncKeyState(VK_ESC)&1: os._exit(0)
+        if user32.GetAsyncKeyState(VK_F1)&1:
+            DEBUG = not DEBUG
+            print(f"[debug {'on' if DEBUG else 'off'}]")
+        if user32.GetAsyncKeyState(VK_ESC)&1:
+            os._exit(0)
+        if user32.GetAsyncKeyState(VK_BACK)&1:
+            PAUSED = not PAUSED
+            if PAUSED:
+                clear_all()
+                print("[paused] press Backspace to resume")
+            else:
+                print("[resumed]")
         time.sleep(0.05)
-threading.Thread(target=hotkeys,daemon=True).start()
+threading.Thread(target=hotkeys, daemon=True).start()
 
 # ─────────────── main loop ───────────────
 def wait_for_ultrakill(max_wait=10) -> bool:
@@ -400,6 +414,10 @@ def main():
 
         while True:
             frame_counter += 1
+
+            if PAUSED:
+                time.sleep(TICK_RATE)
+                continue
 
             gray_frame, color_frame = grab_frames()
             frame = gray_frame
