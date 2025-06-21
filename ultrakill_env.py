@@ -29,6 +29,8 @@ DELTA_ERR_SCALE= 0.2
 ON_CENTER_BONUS= 0.2
 HIT_BONUS      = 1.5
 TARGET_PENALTY = -0.02
+DAMAGE_MOVE_WEIGHT = 0.1
+DAMAGE_THRESHOLD    = 0.05
 
 MOUSEEVENTF_MOVE     = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -151,6 +153,28 @@ def detect_targets(frame: np.ndarray) -> float:
     for m in masks[1:]:
         combined |= m
     return combined.mean()
+
+def detect_damage(frame: np.ndarray) -> Tuple[float, float, float]:
+    """Return overall damage level and a rough direction vector.
+
+    We approximate incoming damage by looking for reddish overlays on the
+    screen edges.  The returned direction points toward the strongest edge
+    (positive x = from the right, positive y = from the bottom).
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (0, 50, 50), (10, 255, 255)) | \
+           cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
+
+    edge = 20
+    left   = mask[:, :edge].mean()
+    right  = mask[:, -edge:].mean()
+    top    = mask[:edge, :].mean()
+    bottom = mask[-edge:, :].mean()
+
+    level = max(left, right, top, bottom) / 255.0
+    dx = right - left
+    dy = bottom - top
+    return level, dx / 255.0, dy / 255.0
 
 
 class UltrakillEnv(gym.Env):
@@ -321,6 +345,7 @@ class UltrakillEnv(gym.Env):
         target_score = detect_targets(frame)
         hit_bonus    = red_center_bonus(frame) * HIT_BONUS
         offset       = detect_target_offset(frame)
+        damage_level, dmg_dx, dmg_dy = detect_damage(frame)
         # base reward: time penalty + curiosity/velocity bonus
         r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
 
@@ -367,6 +392,11 @@ class UltrakillEnv(gym.Env):
 
         if not target_present:
             r += eye_level_bonus(frame)
+
+        if damage_level > DAMAGE_THRESHOLD:
+            move_dot = dx_move * dmg_dx + dy_move * dmg_dy
+            r -= damage_level * 2.0
+            r -= DAMAGE_MOVE_WEIGHT * move_dot
 
         # keep your old sky/ceiling penalty too (you can scale it up):
         r -= pitch_penalty(frame, target_present)    # make that penalty twice as harsh
