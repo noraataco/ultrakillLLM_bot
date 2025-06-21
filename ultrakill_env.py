@@ -10,6 +10,11 @@ from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
 
+# Allow overriding the Tesseract executable location via environment
+tesseract_override = os.environ.get("TESSERACT_CMD")
+if tesseract_override:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_override
+
 # Ensure output directory exists
 os.makedirs("debug_frames", exist_ok=True)
 user32 = ctypes.windll.user32
