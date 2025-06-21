@@ -176,7 +176,7 @@ class UltrakillEnv(gym.Env):
         self.prev_offset  = None
         self.t            = 0
         self.episode_id   = 0
-        self.in_warmup    = False
+        self.auto_forward_end = None
 
     def reset(self, *, seed=None, options=None):
         self.episode_id += 1
@@ -213,10 +213,10 @@ class UltrakillEnv(gym.Env):
         
         # Make extra sure no keys are stuck before we walk in
         release_all_movement_keys()
-        # Start walking in
+        # Start walking in and remember when to stop
         send_scan(SCAN["MOVE_FORWARD"])
         self._spawn_time = time.time()
-        self.in_warmup = True
+        self.auto_forward_end = self._spawn_time + self.WARMUP_TIME
         
         # Get initial observation
         frame = grab_frame()
@@ -225,18 +225,14 @@ class UltrakillEnv(gym.Env):
 
     def step(self, action):
         elapsed = time.time() - self._spawn_time
-        if self.in_warmup:
-            if elapsed < self.WARMUP_TIME:
-                time.sleep(self.FRAME_DELAY)
-                frame = grab_frame()
-                self.prev_frame = frame.copy()
-                self.t += 1
-                return frame, 0.0, False, False, {}
+        auto_forward = False
+        if self.auto_forward_end:
+            if time.time() < self.auto_forward_end:
+                auto_forward = True
             else:
                 send_scan(SCAN["MOVE_FORWARD"], True)
                 time.sleep(0.05)
-
-                self.in_warmup = False
+                self.auto_forward_end = None
 
         # from here on, normal unpack/action/reward logic…
         dx_move, dy_move, shoot_p = map(float, action)
@@ -244,8 +240,8 @@ class UltrakillEnv(gym.Env):
 
         # 2) Full-body locomotion if not aim-only
         if not self.aim_only:
-            # forward/back
-            if   dx_move >  0.1:
+            # forward/back (auto-walk overrides agent input)
+            if auto_forward or dx_move > 0.1:
                 send_scan(SCAN["MOVE_FORWARD"])
             elif dx_move < -0.1:
                 send_scan(SCAN["MOVE_BACK"], True)
