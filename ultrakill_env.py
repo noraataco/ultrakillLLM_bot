@@ -199,7 +199,12 @@ class UltrakillEnv(gym.Env):
         while True:
             frame = grab_frame()
             if not is_score_screen(frame):
-                break
+                # Wait until the screen brightens after the fade-out
+                gray_mean = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
+                if gray_mean > 20:
+                    break
+                time.sleep(0.1)
+                continue
                 
             # For first episode: use soft reset (Esc→Enter)
             if self.episode_id == 1:
