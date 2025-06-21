@@ -230,12 +230,15 @@ class UltrakillEnv(gym.Env):
         return frame, {}
 
     def step(self, action):
+        """Advance the environment by one frame."""
         elapsed = time.time() - self._spawn_time
         auto_forward = False
         if self.auto_forward_end:
             if time.time() < self.auto_forward_end:
+                # during warm-up we keep walking forward
                 auto_forward = True
             else:
+                # stop holding forward once the warm-up period expires
                 send_scan(SCAN["MOVE_FORWARD"], True)
                 time.sleep(0.05)
                 self.auto_forward_end = None
@@ -264,16 +267,22 @@ class UltrakillEnv(gym.Env):
                 send_scan(SCAN["MOVE_RIGHT"], True)
                 send_scan(SCAN["MOVE_LEFT"],  True)
 
-        # 3) Always turn camera
-        user32.mouse_event(
-            MOUSEEVENTF_MOVE,
-            int(dx_move * TURN_PIXELS),
-            int(dy_move * TURN_PIXELS),
-            0, 0
-        )
+        # 3) Always turn camera (except during warm-up auto-walk)
+        if not auto_forward:
+            user32.mouse_event(
+                MOUSEEVENTF_MOVE,
+                int(dx_move * TURN_PIXELS),
+                int(dy_move * TURN_PIXELS),
+                0, 0
+            )
 
-        # 4) Shooting
-        if shoot_p > 0.5:
+        else:
+            # ignore agent camera input while walking into the arena
+            dx_move = dy_move = 0.0
+            shoot_p = 0.0
+
+        # 4) Shooting (disabled during warm-up)
+        if shoot_p > 0.5 and not auto_forward:
             mouse_click()
 
         # 6) Normal frame + reward
