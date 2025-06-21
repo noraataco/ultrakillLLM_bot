@@ -180,7 +180,8 @@ class UltrakillEnv(gym.Env):
         while True:
             frame = grab_frame()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-            if 12 < gray < 240:
+            # Require some variance so we don't mistake the scoreboard for game play
+            if 12 < gray < 240 and frame.std() > 10:
                 break
                 
             # For first episode: use soft reset (Esc→Enter)
@@ -199,6 +200,8 @@ class UltrakillEnv(gym.Env):
                 time.sleep(3.0)
                 break
         
+        # Make extra sure no keys are stuck before we walk in
+        release_all_movement_keys()
         # Start walking in
         send_scan(SCAN["MOVE_FORWARD"])
         self._spawn_time = time.time()
