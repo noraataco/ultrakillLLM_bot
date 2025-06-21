@@ -343,9 +343,3 @@ class UltrakillEnv(gym.Env):
         release_all_movement_keys()
         print("Environment closed - keys released")
 
-# Smoke test
-if __name__ == "__main__":
-    for i in range(5):
-        frame = grab_frame()
-        print(frame.shape)
-        cv2.imwrite(f"test_frame_{i}.png", frame)
