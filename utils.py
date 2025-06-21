@@ -17,12 +17,17 @@ def lock_ultrakill_focus():
     if hwnds:
         hwnd = hwnds[0]
         win32gui.SetForegroundWindow(hwnd)
-        win32gui.SetWindowPos(
-            hwnd,
-            win32con.HWND_TOPMOST,
-            0, 0, 0, 0,
-            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
-        )
+        try:
+            win32gui.SetWindowPos(
+                hwnd,
+                win32con.HWND_TOPMOST,
+                0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+            )
+        except Exception as e:
+            # Windows may refuse if the target process is elevated;
+            # ignore and continue.
+            print(f"lock_ultrakill_focus: could not SetWindowPos: {e}")
         print(f"ULTRAKILL window focused: {win32gui.GetWindowText(hwnd)}")
         return
     print("Warning: ULTRAKILL window not found")

@@ -138,7 +138,7 @@ def main():
     )
 
     # checkpoint every 200k global steps
-    checkpoint_freq = 200_000 // vec.num_envs
+    checkpoint_freq = 20_000 // vec.num_envs
     cb = CheckpointCallback(
         save_freq=checkpoint_freq,
         save_path="./checkpoints/",

@@ -9,6 +9,13 @@ import pytesseract, re # type: ignore
 from ultrakill_ai import soft_reset, send_scan, SCAN, mouse_click
 from typing import Tuple, Optional
 import ctypes.wintypes as wintypes
+from input_helper import press_forward
+import ctypes
+import win32gui
+import win32con
+import win32api
+
+
 
 # Allow overriding the Tesseract executable location via environment
 tesseract_override = os.environ.get("TESSERACT_CMD")
@@ -44,7 +51,7 @@ MOUSEEVENTF_LEFTUP   = 0x0004
 
 STEP_DELAY = 0.02
 # Reward granted each step the agent stays alive
-SURVIVAL_BONUS = 0.01
+SURVIVAL_BONUS = 0.05
 
 # Utility functions
 def pitch_penalty(frame: np.ndarray, target_present: bool) -> float:
@@ -104,7 +111,9 @@ def eye_level_bonus(frame: np.ndarray) -> float:
 
 def is_score_screen(frame: np.ndarray) -> bool:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return gray.mean() < 55 and gray.std() < 20
+    mean, std = gray.mean(), gray.std()
+    # Dark AND very uniform → scoreboard / death screen
+    return (mean < 50) and (std < 15)
 
 def red_center_bonus(rgb: np.ndarray) -> float:
     h,w = rgb.shape[:2]
@@ -215,7 +224,6 @@ class UltrakillEnv(gym.Env):
     def __init__(self, *, aim_only: bool=False):
         super().__init__()
         self.aim_only = aim_only
-
         self.observation_space = Box(
             low=0, high=255, shape=(360, 640, 3), dtype=np.uint8
         )
@@ -232,114 +240,84 @@ class UltrakillEnv(gym.Env):
         self.resets       = 0
         self.dash_count   = 0
         self.health       = None
-        self.auto_forward_active = False
-        self.auto_forward_start  = None
-        self.auto_forward_end    = None
         self.score_screen_frames = 0  # debounce counter
         self.SCORE_FRAMES        = 5
 
     def reset(self, *, seed=None, options=None):
+        # 1) bookkeeping
         self.episode_id += 1
-        self.resets += 1
-        self.t = 0
+        self.resets    += 1
+        self.t          = 0
         release_all_movement_keys()
         time.sleep(0.5)
         lock_ultrakill_focus()
-        time.sleep(0.2)
-        # give Unreal time to unload the last death screen
-        time.sleep(2.0)
+        time.sleep(2.0)  # let the death screen unload
 
-        # 1) keep jumping until you see the scene load (not just bright, but non-score-screen)
-        for _ in range(10):
-            frame = grab_frame()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-            if gray >= 45 and not is_score_screen(frame):
-                break
-            send_scan(SCAN["JUMP"]); send_scan(SCAN["JUMP"], True)
-            time.sleep(0.1)
-        else:
-            # if we never broke out, fall back
-            soft_reset()
-            time.sleep(3.0)
+        # 2) if we’re on the score screen, click twice to advance
+        frame = grab_frame()
+        mean, std = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean(), cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).std()
+        print(f"SCORECHECK: mean={mean:.1f}, std={std:.1f}")
+        if is_score_screen(frame):
+            for attempt in range(8):  # try up to 8 times
+                lock_ultrakill_focus()     # re‐grab focus
+                send_scan(SCAN["JUMP"])    # key‐down
+                send_scan(SCAN["JUMP"], True)  # key‐up
+                time.sleep(0.3)
+                frame = grab_frame()
+                mean, std = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean(), cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).std()
+                print(f"  attempt {attempt+1}: mean={mean:.1f}, std={std:.1f}")
+                if not is_score_screen(frame):
+                    break
+            else:
+                # fallback to a full soft reset if it never cleared
+                print("SCORECHECK: never cleared, doing soft_reset()")
+                soft_reset()
+                time.sleep(3.0)
+                frame = grab_frame()
 
-        # 2) now wait *off* the score screen so you start warmup in the actual map
-        while is_score_screen(frame):
-            time.sleep(0.1)
-            frame = grab_frame()
+        # 3) now we’re clean in the live map—walk forward 4s in one go
+        print("WALK: pressing forward for", self.WARMUP_TIME, "seconds")
+        # key-down using your ultrakill_ai.send_scan, so SCAN matches what step() uses
+        send_scan(SCAN["MOVE_FORWARD"])   
+        time.sleep(self.WARMUP_TIME)
+        print("WALK: releasing forward")
+        send_scan(SCAN["MOVE_FORWARD"], True)
+        # small buffer so the game actually registers the release
+        time.sleep(0.05)
 
-        # now start the 4s warmup forward
-        self.auto_forward_active = True
-        self.auto_forward_start  = time.time()
-        self.auto_forward_end    = self.auto_forward_start + self.WARMUP_TIME
-
-
+        # 4) grab the first “real” observation
         frame = grab_frame()
         self.prev_frame = frame.copy()
         self.dash_count = detect_dashes(frame)
         self.health     = read_health(frame)
+
         return frame, {
             "dash_count": self.dash_count,
-            "health": self.health,
-            "resets": self.resets,
+            "health":     self.health,
+            "resets":     self.resets,
         }
 
     def step(self, action):
-        # handle our 4s auto-forward
-        auto_forward = False
-        if self.auto_forward_active:
-            # on first step after reset, actually press forward
-            if not hasattr(self, "_forward_pressed"):
-                send_scan(SCAN["MOVE_FORWARD"])
-                self._forward_pressed = True
+        dx, dy, shoot = map(float, action)
+        dx, dy = np.clip([dx, dy], -1, 1)
 
-            # still within warmup window?
-            if time.time() < self.auto_forward_end:
-                auto_forward = True
-            else:
-                # warmup done *and* ensure we're off the score screen
-                if not is_score_screen(grab_frame()):
-                    send_scan(SCAN["MOVE_FORWARD"], True)
-                    time.sleep(0.05)
-                    self.auto_forward_active = False
-                else:
-                    auto_forward = True  # hold until screen clears
-
-        dx_move, dy_move, shoot_p = map(float, action)
-        dx_move, dy_move = np.clip([dx_move, dy_move], -1, 1)
-
-        # movement...
+        # movement
         if not self.aim_only:
-            if auto_forward or dx_move > 0.1:
-                send_scan(SCAN["MOVE_FORWARD"])
-            elif dx_move < -0.1:
-                send_scan(SCAN["MOVE_BACK"], True)
+            if abs(dx) < 0.1 and abs(dy) < 0.1:
+                release_all_movement_keys()
             else:
-                send_scan(SCAN["MOVE_FORWARD"], True); send_scan(SCAN["MOVE_BACK"], True)
+                if dx > 0.1: send_scan(SCAN["MOVE_FORWARD"])
+                elif dx < -0.1: send_scan(SCAN["MOVE_BACK"])
+                if dy > 0.1: send_scan(SCAN["MOVE_RIGHT"])
+                elif dy < -0.1: send_scan(SCAN["MOVE_LEFT"])
 
-            if not auto_forward:
-                if dy_move > 0.1:
-                    send_scan(SCAN["MOVE_RIGHT"])
-                elif dy_move < -0.1:
-                    send_scan(SCAN["MOVE_LEFT"], True)
-                else:
-                    send_scan(SCAN["MOVE_RIGHT"], True); send_scan(SCAN["MOVE_LEFT"], True)
-            else:
-                send_scan(SCAN["MOVE_RIGHT"], True); send_scan(SCAN["MOVE_LEFT"], True)
-                dy_move = 0.0
+        # camera
+        user32.mouse_event(MOUSEEVENTF_MOVE,
+            int(dx * TURN_PIXELS),
+            int(dy * TURN_PIXELS), 0, 0)
 
-        # camera...
-        if not auto_forward:
-            user32.mouse_event(
-                MOUSEEVENTF_MOVE,
-                int(dx_move * TURN_PIXELS),
-                int(dy_move * TURN_PIXELS),
-                0, 0
-            )
-        else:
-            dx_move = dy_move = shoot_p = 0.0
-
-        # shoot...
-        if shoot_p > 0.5 and not auto_forward:
+        # shoot
+        if shoot > 0.5:
             mouse_click()
 
         time.sleep(self.FRAME_DELAY)
@@ -347,86 +325,75 @@ class UltrakillEnv(gym.Env):
         self.dash_count = detect_dashes(frame)
         self.health     = read_health(frame)
 
+        # score/death detection
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean()
-        if is_score_screen(frame):
-            self.score_screen_frames = min(
-                self.score_screen_frames + 1, self.SCORE_FRAMES
-            )
-        else:
-            self.score_screen_frames = max(self.score_screen_frames - 1, 0)
-
-        if (
-            self.score_screen_frames >= self.SCORE_FRAMES
-            or gray < 12
-            or gray > 240
-        ):
+        if is_score_screen(frame) or gray < 12 or gray > 240:
             release_all_movement_keys()
-            self.score_screen_frames = 0
             return frame, -50.0, True, False, {
                 "dash_count": self.dash_count,
-                "health": self.health,
-                "resets": self.resets,
+                "health":     self.health,
+                "resets":     self.resets,
             }
 
         # reward shaping...
         diff = np.abs(frame.astype(np.int16) - self.prev_frame.astype(np.int16))
         motion_frac = (diff > 15).mean()
-        hit_bonus = red_center_bonus(frame) * HIT_BONUS
-        offset = detect_target_offset(frame)
+        hit_bonus   = red_center_bonus(frame) * HIT_BONUS
+        offset      = detect_target_offset(frame)
         damage_level, dmg_dx, dmg_dy = detect_damage(frame)
 
-        r = -0.02 + (CURI_SCALE + VEL_SCALE)*(diff.mean()/255)
-        target_score = detect_targets(frame)
+        r = -0.02 + (CURI_SCALE + VEL_SCALE) * (diff.mean() / 255)
+        target_score   = detect_targets(frame)
         target_present = target_score > 0.02
 
         if target_score > 0.01:
-            r += TURN_R*(abs(dx_move)+abs(dy_move))
-        if shoot_p > 0.5 and target_score < 0.02:
+            r += TURN_R * (abs(dx) + abs(dy))
+        if shoot > 0.5 and target_score < 0.02:
             r -= 0.5
 
         if target_score > 0.02:
-            if shoot_p > 0.5:
-                r += 2.0 + 2.0*target_score + hit_bonus
+            if shoot > 0.5:
+                r += 2.0 + 2.0 * target_score + hit_bonus
             else:
                 r -= 0.005
         else:
-            r += 0.02*motion_frac
+            r += 0.02 * motion_frac
 
-        if shoot_p > 0.5 and offset and abs(offset[0])<0.1 and abs(offset[1])<0.1:
-            r += ON_CENTER_BONUS*1.5
+        if shoot > 0.5 and offset and abs(offset[0]) < 0.1 and abs(offset[1]) < 0.1:
+            r += ON_CENTER_BONUS * 1.5
 
         if not target_present:
-            r += 0.05*abs(dx_move)
-            r -= 0.05*abs(dy_move)
+            r += 0.05 * abs(dx)
+            r -= 0.05 * abs(dy)
 
         if offset is not None:
             up_err = max(0.0, -offset[1])
             down_b = max(0.0, offset[1])
-            r -= up_err*0.5; r += down_b*0.2
+            r -= up_err * 0.5
+            r += down_b * 0.2
             if not target_present:
-                r -= 0.05*abs(offset[1])
-                if abs(offset[1])<0.1:
+                r -= 0.05 * abs(offset[1])
+                if abs(offset[1]) < 0.1:
                     r += 0.01
 
         if not target_present:
             r += eye_level_bonus(frame)
 
         if damage_level > DAMAGE_THRESHOLD:
-            move_dot = dx_move*dmg_dx + dy_move*dmg_dy
-            r -= damage_level*2.0
-            r -= DAMAGE_MOVE_WEIGHT*move_dot
+            move_dot = dx * dmg_dx + dy * dmg_dy
+            r -= damage_level * 2.0
+            r -= DAMAGE_MOVE_WEIGHT * move_dot
 
         r -= pitch_penalty(frame, target_present)
         r += SURVIVAL_BONUS
 
         self.prev_frame = frame.copy()
         self.t += 1
-        done = self.t >= 2000
-
+        done   = self.t >= 2000
         return frame, float(r), done, False, {
             "dash_count": self.dash_count,
-            "health": self.health,
-            "resets": self.resets,
+            "health":     self.health,
+            "resets":     self.resets,
         }
 
     def close(self):

@@ -1,11 +1,11 @@
-
+# ppo_episodes.py
 import numpy as np
 import torch as th
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
-from stable_baselines3.common.type_aliases import RolloutBuffer
+from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.utils import obs_as_tensor
 
 
@@ -79,14 +79,19 @@ class PPOEpisodes(PPO):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(
-                self._last_obs,
-                actions,
-                rewards,
-                self._last_episode_starts,
-                values,
-                log_probs,
-            )
+            # don’t overflow the buffer (max size = rollout_buffer.buffer_size)
+            if rollout_buffer.pos < rollout_buffer.buffer_size:
+                rollout_buffer.add(
+                    self._last_obs,
+                    actions,
+                    rewards,
+                    self._last_episode_starts,
+                    values,
+                    log_probs,
+                )
+            else:
+                # buffer’s full—break out of the episode loop
+                break
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
